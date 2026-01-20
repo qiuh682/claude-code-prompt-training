@@ -29,6 +29,9 @@ dependencies = [
     "redis>=5.0.0",
     "pydantic-settings>=2.0.0",
     "python-multipart>=0.0.9",
+    # Auth
+    "pyjwt>=2.8.0",
+    "passlib[bcrypt]>=1.7.4",
 ]
 
 [project.optional-dependencies]
@@ -123,5 +126,7 @@ plugins = ["pydantic.mypy"]
 module = [
     "asyncpg.*",
     "redis.*",
+    "passlib.*",
+    "jwt.*",
 ]
 ignore_missing_imports = true
