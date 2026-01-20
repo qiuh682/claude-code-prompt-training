@@ -1,12 +1,12 @@
 """Authentication service layer."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from apps.api.auth.models import ApiKey, RefreshToken, User
+from apps.api.auth.models import ApiKey, PasswordResetToken, RefreshToken, User
 from apps.api.auth.schemas import ApiKeyCreate, UserRegister
 from apps.api.auth.security import (
     create_access_token,
@@ -365,3 +365,98 @@ def validate_api_key(db: Session, plaintext_key: str) -> ApiKey | None:
     update_api_key_last_used(db, api_key)
 
     return api_key
+
+
+# =============================================================================
+# Password Reset Operations
+# =============================================================================
+
+PASSWORD_RESET_EXPIRE_HOURS = 1  # Token expires in 1 hour
+
+
+class PasswordResetError(AuthError):
+    """Password reset related error."""
+
+    pass
+
+
+def create_password_reset_token(db: Session, email: str) -> str | None:
+    """Create a password reset token for a user.
+
+    Returns:
+        The plaintext token if user exists, None otherwise.
+        (Caller should not reveal whether user exists)
+    """
+    # Find user by email
+    user = get_user_by_email(db, email)
+    if not user:
+        return None
+
+    if not user.is_active:
+        return None
+
+    # Generate token
+    plaintext_token = generate_refresh_token()  # Reuse secure token generation
+
+    # Calculate expiry
+    expires_at = datetime.utcnow() + timedelta(hours=PASSWORD_RESET_EXPIRE_HOURS)
+
+    # Create token record
+    reset_token = PasswordResetToken(
+        user_id=user.id,
+        token_hash=hash_token(plaintext_token),
+        expires_at=expires_at,
+    )
+    db.add(reset_token)
+    db.commit()
+
+    return plaintext_token
+
+
+def validate_password_reset_token(db: Session, token: str) -> PasswordResetToken | None:
+    """Validate a password reset token.
+
+    Returns:
+        The token record if valid, None otherwise.
+    """
+    token_hash = hash_token(token)
+
+    stmt = select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
+    token_record = db.execute(stmt).scalar_one_or_none()
+
+    if not token_record:
+        return None
+
+    if not token_record.is_valid:
+        return None
+
+    return token_record
+
+
+def reset_password(db: Session, token: str, new_password: str) -> bool:
+    """Reset user password using a valid reset token.
+
+    Returns:
+        True if password was reset, False if token invalid.
+    """
+    # Validate token
+    token_record = validate_password_reset_token(db, token)
+    if not token_record:
+        return False
+
+    # Get user
+    user = get_user_by_id(db, token_record.user_id)
+    if not user or not user.is_active:
+        return False
+
+    # Update password
+    user.password_hash = hash_password(new_password)
+
+    # Mark token as used
+    token_record.used_at = datetime.utcnow()
+
+    # Revoke all refresh tokens (force re-login on all devices)
+    revoke_all_user_tokens(db, user.id)
+
+    db.commit()
+    return True

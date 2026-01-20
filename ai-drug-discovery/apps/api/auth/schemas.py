@@ -163,6 +163,38 @@ class ApiKeyCreatedResponse(BaseModel):
 
 
 # =============================================================================
+# Password Reset Schemas
+# =============================================================================
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Password reset request (forgot password)."""
+
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Password reset with token."""
+
+    token: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        """Validate password strength (same rules as registration)."""
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain an uppercase letter")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain a lowercase letter")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain a digit")
+        return v
+
+
+# =============================================================================
 # Internal Schemas
 # =============================================================================
 

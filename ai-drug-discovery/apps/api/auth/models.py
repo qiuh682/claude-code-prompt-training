@@ -270,3 +270,35 @@ class RefreshToken(Base):
 
     def __repr__(self) -> str:
         return f"<RefreshToken {self.id}>"
+
+
+# =============================================================================
+# Password Reset Token Model
+# =============================================================================
+
+
+class PasswordResetToken(Base):
+    """Token for password reset functionality."""
+
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash = Column(String(255), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)  # Set when token is used
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    user = relationship("User", backref="password_reset_tokens")
+
+    @property
+    def is_valid(self) -> bool:
+        """Check if token is valid (not expired, not used)."""
+        now = datetime.utcnow()
+        return self.used_at is None and self.expires_at > now
+
+    def __repr__(self) -> str:
+        return f"<PasswordResetToken {self.id}>"

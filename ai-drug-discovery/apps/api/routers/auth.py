@@ -6,9 +6,11 @@ from sqlalchemy.orm import Session
 from apps.api.auth.dependencies import get_current_user
 from apps.api.auth.models import User
 from apps.api.auth.schemas import (
+    ForgotPasswordRequest,
     LoginResponse,
     LogoutRequest,
     MessageResponse,
+    ResetPasswordRequest,
     TokenRefresh,
     TokenResponse,
     UserLogin,
@@ -21,10 +23,12 @@ from apps.api.auth.service import (
     UserExistsError,
     UserInactiveError,
     authenticate_user,
+    create_password_reset_token,
     create_tokens,
     create_user,
     get_token_expiry_seconds,
     refresh_tokens,
+    reset_password,
     revoke_all_user_tokens,
     revoke_refresh_token,
 )
@@ -165,3 +169,55 @@ def logout(
 def get_me(user: User = Depends(get_current_user)) -> User:
     """Get current user profile."""
     return user
+
+
+# =============================================================================
+# Password Reset
+# =============================================================================
+
+
+@router.post(
+    "/password/forgot",
+    response_model=MessageResponse,
+    dependencies=[Depends(rate_limit_auth)],
+)
+def forgot_password(
+    data: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    """Request password reset.
+
+    Always returns 200 to avoid leaking whether email exists.
+    In production, this would send an email with the reset link.
+    """
+    # Create token (returns None if user doesn't exist, but we don't reveal that)
+    _token = create_password_reset_token(db, data.email)
+
+    # In production: send email with reset link containing the token
+    # For now, the token can be captured from DB in tests
+
+    # Always return success message (don't leak email existence)
+    return MessageResponse(
+        message="If an account exists with this email, a password reset link has been sent."
+    )
+
+
+@router.post(
+    "/password/reset",
+    response_model=MessageResponse,
+    dependencies=[Depends(rate_limit_auth)],
+)
+def reset_password_endpoint(
+    data: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    """Reset password using reset token."""
+    success = reset_password(db, data.token, data.new_password)
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    return MessageResponse(message="Password has been reset successfully")
