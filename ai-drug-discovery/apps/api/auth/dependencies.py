@@ -1,20 +1,50 @@
 """FastAPI dependencies for authentication and authorization."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Path, status
+from fastapi import Depends, Header, HTTPException, Path, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from apps.api.auth.models import Membership, Organization, Team, User, UserRole
+from apps.api.auth.models import ApiKey, Membership, Organization, Team, User, UserRole
 from apps.api.auth.security import decode_access_token
+from apps.api.auth.service import validate_api_key
 from apps.api.db import get_db
 
 # Bearer token scheme
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+# =============================================================================
+# Auth Context (unified for JWT and API Key)
+# =============================================================================
+
+
+@dataclass
+class AuthContext:
+    """Authentication context - can be from JWT or API key."""
+
+    # The authenticated entity
+    user: User | None = None  # Set if JWT auth
+    api_key: ApiKey | None = None  # Set if API key auth
+
+    # For API key auth, these are set from the key
+    org_id: UUID | None = None
+    role: UserRole | None = None
+
+    @property
+    def is_api_key(self) -> bool:
+        """Check if authenticated via API key."""
+        return self.api_key is not None
+
+    @property
+    def is_user(self) -> bool:
+        """Check if authenticated via JWT (user)."""
+        return self.user is not None and self.api_key is None
 
 
 # =============================================================================
@@ -88,6 +118,79 @@ def get_current_user_optional(
         return get_current_user(credentials, db)
     except HTTPException:
         return None
+
+
+# =============================================================================
+# API Key Authentication
+# =============================================================================
+
+
+def get_api_key_header(
+    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+) -> str | None:
+    """Extract API key from X-API-Key header."""
+    return x_api_key
+
+
+def get_auth_context(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    api_key_header: str | None = Depends(get_api_key_header),
+    db: Session = Depends(get_db),
+) -> AuthContext:
+    """Get authentication context from either JWT or API key.
+
+    Priority:
+    1. X-API-Key header (if present)
+    2. Authorization: Bearer <JWT> header
+
+    Usage:
+        @app.get("/resource")
+        def get_resource(auth: AuthContext = Depends(get_auth_context)):
+            if auth.is_api_key:
+                # Authenticated via API key
+                org_id = auth.org_id
+                role = auth.role
+            else:
+                # Authenticated via JWT
+                user = auth.user
+    """
+    # Try API key first
+    if api_key_header:
+        api_key = validate_api_key(db, api_key_header)
+        if not api_key:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired API key",
+            )
+
+        # Check org is active
+        org = db.execute(
+            select(Organization).where(Organization.id == api_key.organization_id)
+        ).scalar_one_or_none()
+
+        if not org or not org.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Organization is inactive",
+            )
+
+        return AuthContext(
+            api_key=api_key,
+            org_id=api_key.organization_id,  # type: ignore[arg-type]
+            role=api_key.role,
+        )
+
+    # Try JWT
+    if credentials:
+        user = get_current_user(credentials, db)
+        return AuthContext(user=user)
+
+    # No authentication provided
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated. Provide Authorization header or X-API-Key.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 # =============================================================================

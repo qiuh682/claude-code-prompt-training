@@ -67,6 +67,7 @@ class User(Base):
     memberships = relationship(
         "Membership", back_populates="user", cascade="all, delete-orphan"
     )
+    api_keys = relationship("ApiKey", back_populates="created_by")
 
     def __repr__(self) -> str:
         return f"<User {self.email}>"
@@ -97,6 +98,9 @@ class Organization(Base):
     )
     memberships = relationship(
         "Membership", back_populates="organization", cascade="all, delete-orphan"
+    )
+    api_keys = relationship(
+        "ApiKey", back_populates="organization", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
@@ -173,6 +177,63 @@ class Membership(Base):
 
     def __repr__(self) -> str:
         return f"<Membership user={self.user_id} org={self.organization_id} role={self.role}>"
+
+
+# =============================================================================
+# API Key Model
+# =============================================================================
+
+
+class ApiKey(Base):
+    """API key for programmatic access."""
+
+    __tablename__ = "api_keys"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Key identification
+    name = Column(String(255), nullable=False)
+    key_prefix = Column(String(12), nullable=False)  # e.g., "sk_live_abc1"
+    key_hash = Column(String(255), nullable=False, index=True)
+
+    # Permissions
+    role = Column(Enum(UserRole), nullable=False, default=UserRole.VIEWER)
+    scopes = Column(Text, nullable=True)  # JSON array of scopes, e.g., '["read:molecules"]'
+
+    # Rate limiting (overrides org default if set)
+    rate_limit_rpm = Column(Integer, nullable=True)
+
+    # Lifecycle
+    expires_at = Column(DateTime, nullable=True)  # None = never expires
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    organization = relationship("Organization", back_populates="api_keys")
+    created_by = relationship("User", back_populates="api_keys")
+
+    @property
+    def is_valid(self) -> bool:
+        """Check if API key is valid (not expired, not revoked)."""
+        if self.revoked_at is not None:
+            return False
+        if self.expires_at is not None and self.expires_at < datetime.utcnow():
+            return False
+        return True
+
+    def __repr__(self) -> str:
+        return f"<ApiKey {self.key_prefix}... org={self.organization_id}>"
 
 
 # =============================================================================

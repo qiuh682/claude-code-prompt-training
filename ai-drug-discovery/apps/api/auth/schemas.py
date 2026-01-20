@@ -77,7 +77,6 @@ class UserResponse(BaseModel):
     id: UUID
     email: str
     full_name: str
-    role: UserRole
     is_active: bool
     is_verified: bool
     created_at: datetime
@@ -106,6 +105,61 @@ class MessageResponse(BaseModel):
     """Simple message response."""
 
     message: str
+
+
+# =============================================================================
+# API Key Schemas
+# =============================================================================
+
+
+class ApiKeyCreate(BaseModel):
+    """API key creation request."""
+
+    name: str
+    role: UserRole = UserRole.VIEWER
+    scopes: list[str] | None = None  # e.g., ["read:molecules", "write:predictions"]
+    expires_in_days: int | None = None  # None = never expires
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Validate API key name."""
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("Name must be at least 2 characters")
+        if len(v) > 255:
+            raise ValueError("Name must be at most 255 characters")
+        return v
+
+
+class ApiKeyResponse(BaseModel):
+    """API key response (without the actual key)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    key_prefix: str
+    role: UserRole
+    scopes: list[str] | None = None
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    created_at: datetime
+    created_by_email: str | None = None
+
+
+class ApiKeyCreatedResponse(BaseModel):
+    """Response when API key is created (includes plaintext key ONCE)."""
+
+    id: UUID
+    name: str
+    key: str  # Full key - ONLY shown once!
+    key_prefix: str
+    role: UserRole
+    scopes: list[str] | None = None
+    expires_at: datetime | None
+    created_at: datetime
+    warning: str = "Store this key securely. It will not be shown again."
 
 
 # =============================================================================

@@ -6,10 +6,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from apps.api.auth.models import RefreshToken, User, UserRole
-from apps.api.auth.schemas import UserRegister
+from apps.api.auth.models import ApiKey, RefreshToken, User
+from apps.api.auth.schemas import ApiKeyCreate, UserRegister
 from apps.api.auth.security import (
     create_access_token,
+    generate_api_key,
     generate_refresh_token,
     get_access_token_expiry,
     get_refresh_token_expiry,
@@ -73,12 +74,11 @@ def create_user(db: Session, data: UserRegister) -> User:
     if existing:
         raise UserExistsError("Email already registered")
 
-    # Create user
+    # Create user (role is now per-org via Membership, not on User)
     user = User(
         email=data.email,
         password_hash=hash_password(data.password),
         full_name=data.full_name,
-        role=UserRole.VIEWER,  # Default role
     )
     db.add(user)
     db.commit()
@@ -121,11 +121,13 @@ def create_tokens(
 ) -> tuple[str, str]:
     """Create access and refresh tokens for a user.
 
+    Note: JWT contains user_id only. Role is determined per-org at access time.
+
     Returns:
         Tuple of (access_token, refresh_token)
     """
-    # Create access token
-    access_token = create_access_token(user.id, user.role.value)
+    # Create access token (role is "user" - actual role checked per-org)
+    access_token = create_access_token(user.id, "user")
 
     # Create refresh token
     refresh_token = generate_refresh_token()
@@ -178,8 +180,8 @@ def refresh_tokens(
     # Revoke old refresh token (rotation)
     token_record.revoked_at = datetime.utcnow()
 
-    # Create new tokens
-    access_token = create_access_token(user.id, user.role.value)
+    # Create new tokens (role is "user" - actual role checked per-org)
+    access_token = create_access_token(user.id, "user")
     new_refresh_token = generate_refresh_token()
 
     # Store new refresh token
@@ -238,3 +240,128 @@ def revoke_all_user_tokens(db: Session, user_id: UUID) -> int:
 def get_token_expiry_seconds() -> int:
     """Get access token expiry in seconds."""
     return get_access_token_expiry()
+
+
+# =============================================================================
+# API Key Operations
+# =============================================================================
+
+
+class ApiKeyError(AuthError):
+    """API key related error."""
+
+    pass
+
+
+def create_api_key(
+    db: Session,
+    org_id: UUID,
+    created_by_id: UUID,
+    data: ApiKeyCreate,
+) -> tuple[ApiKey, str]:
+    """Create a new API key for an organization.
+
+    Returns:
+        Tuple of (api_key_record, plaintext_key)
+        The plaintext key is only available at creation time!
+    """
+    import json
+    from datetime import timedelta
+
+    # Generate the key
+    plaintext_key, key_prefix = generate_api_key()
+
+    # Calculate expiry
+    expires_at = None
+    if data.expires_in_days:
+        expires_at = datetime.utcnow() + timedelta(days=data.expires_in_days)
+
+    # Store scopes as JSON
+    scopes_json = json.dumps(data.scopes) if data.scopes else None
+
+    # Create API key record
+    api_key = ApiKey(
+        organization_id=org_id,
+        created_by_id=created_by_id,
+        name=data.name,
+        key_prefix=key_prefix,
+        key_hash=hash_token(plaintext_key),
+        role=data.role,
+        scopes=scopes_json,
+        expires_at=expires_at,
+    )
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+
+    return api_key, plaintext_key
+
+
+def get_api_key_by_hash(db: Session, key_hash: str) -> ApiKey | None:
+    """Get API key by its hash."""
+    stmt = select(ApiKey).where(ApiKey.key_hash == key_hash)
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def get_api_keys_by_org(db: Session, org_id: UUID) -> list[ApiKey]:
+    """Get all API keys for an organization."""
+    stmt = (
+        select(ApiKey)
+        .where(ApiKey.organization_id == org_id, ApiKey.revoked_at.is_(None))
+        .order_by(ApiKey.created_at.desc())
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+def get_api_key_by_id(db: Session, key_id: UUID, org_id: UUID) -> ApiKey | None:
+    """Get API key by ID within an organization."""
+    stmt = select(ApiKey).where(
+        ApiKey.id == key_id,
+        ApiKey.organization_id == org_id,
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def revoke_api_key(db: Session, key_id: UUID, org_id: UUID) -> bool:
+    """Revoke an API key.
+
+    Returns:
+        True if key was found and revoked, False otherwise.
+    """
+    api_key = get_api_key_by_id(db, key_id, org_id)
+
+    if api_key and api_key.revoked_at is None:
+        api_key.revoked_at = datetime.utcnow()
+        db.commit()
+        return True
+
+    return False
+
+
+def update_api_key_last_used(db: Session, api_key: ApiKey) -> None:
+    """Update the last_used_at timestamp for an API key."""
+    api_key.last_used_at = datetime.utcnow()
+    db.commit()
+
+
+def validate_api_key(db: Session, plaintext_key: str) -> ApiKey | None:
+    """Validate an API key and return the key record if valid.
+
+    Also updates the last_used_at timestamp.
+
+    Returns:
+        ApiKey record if valid, None otherwise.
+    """
+    key_hash = hash_token(plaintext_key)
+    api_key = get_api_key_by_hash(db, key_hash)
+
+    if not api_key:
+        return None
+
+    if not api_key.is_valid:
+        return None
+
+    # Update last used timestamp
+    update_api_key_last_used(db, api_key)
+
+    return api_key

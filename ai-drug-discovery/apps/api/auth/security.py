@@ -54,6 +54,31 @@ def generate_refresh_token() -> str:
 
 
 # =============================================================================
+# API Key Generation
+# =============================================================================
+
+API_KEY_PREFIX = "sk_live_"
+
+
+def generate_api_key() -> tuple[str, str]:
+    """Generate a secure API key.
+
+    Returns:
+        Tuple of (full_key, prefix) where:
+        - full_key: The complete API key (e.g., "sk_live_abc123...")
+        - prefix: The visible prefix for identification (e.g., "sk_live_abc1")
+    """
+    # Generate 32 bytes of random data (256 bits)
+    random_part = secrets.token_urlsafe(32)
+    full_key = f"{API_KEY_PREFIX}{random_part}"
+
+    # Prefix is first 12 chars (sk_live_ + 4 chars of random)
+    prefix = full_key[:12]
+
+    return full_key, prefix
+
+
+# =============================================================================
 # JWT Access Tokens
 # =============================================================================
 

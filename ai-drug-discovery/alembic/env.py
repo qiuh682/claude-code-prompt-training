@@ -6,6 +6,14 @@ from logging.config import fileConfig
 from sqlalchemy import create_engine, pool
 
 from alembic import context
+from apps.api.auth.models import (  # noqa: F401
+    ApiKey,
+    Membership,
+    Organization,
+    RefreshToken,
+    Team,
+    User,
+)
 from db.base import Base
 
 # Import all models here so Alembic can detect them
