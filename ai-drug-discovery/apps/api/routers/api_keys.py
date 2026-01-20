@@ -11,6 +11,7 @@ from apps.api.auth.models import ApiKey
 from apps.api.auth.schemas import ApiKeyCreate, ApiKeyCreatedResponse, ApiKeyResponse
 from apps.api.auth.service import create_api_key, get_api_keys_by_org, revoke_api_key
 from apps.api.db import get_db
+from apps.api.ratelimit import rate_limit_default
 
 router = APIRouter(prefix="/orgs/{org_id}/api-keys", tags=["API Keys"])
 
@@ -42,6 +43,7 @@ def _api_key_to_response(api_key: ApiKey) -> ApiKeyResponse:
     "",
     response_model=ApiKeyCreatedResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_default)],
 )
 def create_key(
     data: ApiKeyCreate,
@@ -78,7 +80,11 @@ def create_key(
     )
 
 
-@router.get("", response_model=list[ApiKeyResponse])
+@router.get(
+    "",
+    response_model=list[ApiKeyResponse],
+    dependencies=[Depends(rate_limit_default)],
+)
 def list_keys(
     ctx: OrgContext = Depends(require_org_admin),
     db: Session = Depends(get_db),
@@ -91,7 +97,11 @@ def list_keys(
     return [_api_key_to_response(key) for key in api_keys]
 
 
-@router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{key_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(rate_limit_default)],
+)
 def revoke_key(
     key_id: UUID,
     ctx: OrgContext = Depends(require_org_admin),

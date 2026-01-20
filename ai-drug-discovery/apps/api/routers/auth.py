@@ -29,6 +29,7 @@ from apps.api.auth.service import (
     revoke_refresh_token,
 )
 from apps.api.db import get_db
+from apps.api.ratelimit import rate_limit_auth, rate_limit_default
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -49,6 +50,7 @@ def get_client_info(request: Request) -> tuple[str | None, str | None]:
     "/register",
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_auth)],
 )
 def register(
     data: UserRegister,
@@ -65,7 +67,11 @@ def register(
         ) from None
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post(
+    "/login",
+    response_model=LoginResponse,
+    dependencies=[Depends(rate_limit_auth)],
+)
 def login(
     data: UserLogin,
     request: Request,
@@ -98,7 +104,11 @@ def login(
     )
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    dependencies=[Depends(rate_limit_auth)],
+)
 def refresh(
     data: TokenRefresh,
     request: Request,
@@ -147,7 +157,11 @@ def logout(
             return MessageResponse(message="Token already revoked or not found")
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get(
+    "/me",
+    response_model=UserResponse,
+    dependencies=[Depends(rate_limit_default)],
+)
 def get_me(user: User = Depends(get_current_user)) -> User:
     """Get current user profile."""
     return user
