@@ -1,0 +1,103 @@
+# Docker Compose for AI Drug Discovery Platform
+# AI 药物发现平台 Docker Compose 配置
+
+services:
+  # =============================================================================
+  # PostgreSQL Database / PostgreSQL 数据库
+  # =============================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: drugdiscovery-postgres
+    # Load credentials from .env file / 从 .env 文件加载凭据
+    env_file:
+      - .env
+    environment:
+      # Map our env vars to Postgres expected vars
+      # 将环境变量映射到 Postgres 期望的变量名
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-drugdiscovery}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Named volume for data persistence / 命名卷用于数据持久化
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # Check if postgres is ready to accept connections
+      # 检查 postgres 是否准备好接受连接
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-drugdiscovery}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # =============================================================================
+  # Redis Cache / Redis 缓存
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: drugdiscovery-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      # Persist Redis data (optional for dev) / 持久化 Redis 数据（开发可选）
+      - redis_data:/data
+    # Enable append-only file for persistence / 启用 AOF 持久化
+    command: redis-server --appendonly yes
+    healthcheck:
+      # Verify Redis responds to PING / 验证 Redis 响应 PING
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # =============================================================================
+  # FastAPI Application / FastAPI 应用
+  # =============================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development  # Use dev stage for hot reload / 使用开发阶段以支持热重载
+    container_name: drugdiscovery-api
+    # Load all env vars from .env / 从 .env 加载所有环境变量
+    env_file:
+      - .env
+    ports:
+      # Expose API on host port 8000 / 在主机端口 8000 暴露 API
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      # Mount source code for live reload / 挂载源代码以支持实时重载
+      - ./apps:/app/apps
+      - ./packages:/app/packages
+      - ./db:/app/db
+      - ./alembic:/app/alembic
+      - ./tests:/app/tests
+      - ./scripts:/app/scripts
+    environment:
+      # Wait script configuration / 等待脚本配置
+      WAIT_MAX_RETRIES: 30
+      WAIT_RETRY_INTERVAL: 2
+    depends_on:
+      # Wait for dependencies to be healthy, not just started
+      # 等待依赖服务健康，而不仅仅是启动
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Auto-restart on failure / 失败时自动重启
+    restart: unless-stopped
+
+# =============================================================================
+# Named Volumes / 命名卷
+# =============================================================================
+volumes:
+  # Persistent storage for PostgreSQL / PostgreSQL 持久化存储
+  postgres_data:
+    name: drugdiscovery-postgres-data
+  # Persistent storage for Redis / Redis 持久化存储
+  redis_data:
+    name: drugdiscovery-redis-data
