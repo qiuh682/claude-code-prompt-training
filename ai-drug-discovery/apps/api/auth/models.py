@@ -103,6 +103,23 @@ class Organization(Base):
         "ApiKey", back_populates="organization", cascade="all, delete-orphan"
     )
 
+    # Drug Discovery relationships
+    molecules = relationship(
+        "Molecule", back_populates="organization", cascade="all, delete-orphan"
+    )
+    targets = relationship(
+        "Target", back_populates="organization", cascade="all, delete-orphan"
+    )
+    projects = relationship(
+        "Project", back_populates="organization", cascade="all, delete-orphan"
+    )
+    assays = relationship(
+        "Assay", back_populates="organization", cascade="all, delete-orphan"
+    )
+    predictions = relationship(
+        "Prediction", back_populates="organization", cascade="all, delete-orphan"
+    )
+
     def __repr__(self) -> str:
         return f"<Organization {self.slug}>"
 
