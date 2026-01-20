@@ -1,0 +1,20 @@
+# requirements-dev.in - Development dependencies (human-edited)
+# Run: pip-compile requirements-dev.in -o requirements-dev.txt
+
+# Include production deps
+-r requirements.in
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+httpx>=0.27.0
+
+# Code quality
+black>=24.0.0
+ruff>=0.3.0
+mypy>=1.8.0
+pre-commit>=3.6.0
+
+# Type stubs
+types-redis>=4.6.0

@@ -1,0 +1,66 @@
+name: Docker Compose Smoke Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Start Docker Compose
+        run: docker compose up -d --build
+
+      - name: Wait for health endpoint
+        run: |
+          echo "Waiting for http://localhost:8000/health..."
+          timeout=120
+          elapsed=0
+          interval=2
+
+          while [ $elapsed -lt $timeout ]; do
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo "000")
+
+            if [ "$http_code" = "200" ]; then
+              echo "Health endpoint returned 200 after ${elapsed}s"
+              curl -s http://localhost:8000/health | jq . || true
+              exit 0
+            fi
+
+            if [ $((elapsed % 10)) -eq 0 ] && [ $elapsed -gt 0 ]; then
+              echo "Still waiting... (${elapsed}s elapsed, HTTP code: $http_code)"
+            fi
+
+            sleep $interval
+            elapsed=$((elapsed + interval))
+          done
+
+          echo "Timeout after ${timeout}s"
+          exit 1
+
+      - name: Show container status (on failure)
+        if: failure()
+        run: docker compose ps
+
+      - name: Show API logs (on failure)
+        if: failure()
+        run: docker compose logs --tail=100 api
+
+      - name: Show Postgres logs (on failure)
+        if: failure()
+        run: docker compose logs --tail=100 postgres
+
+      - name: Show Redis logs (on failure)
+        if: failure()
+        run: docker compose logs --tail=100 redis
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v

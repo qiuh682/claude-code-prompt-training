@@ -1,0 +1,20 @@
+# requirements.in - Abstract dependencies (human-edited)
+# Run: pip-compile requirements.in -o requirements.txt
+
+# Core
+fastapi[standard]>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+alembic>=1.13.0
+
+# Cache
+redis>=5.0.0
+
+# Config
+pydantic-settings>=2.0.0
+
+# Forms
+python-multipart>=0.0.9
