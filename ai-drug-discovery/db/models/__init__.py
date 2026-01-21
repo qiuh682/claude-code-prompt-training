@@ -10,6 +10,7 @@ from db.models.base_model import (
 from db.models.discovery import (
     Assay,
     Molecule,
+    MoleculeFingerprint,
     MoleculeTarget,
     Prediction,
     Project,
@@ -28,6 +29,7 @@ __all__ = [
     # Discovery models
     "Assay",
     "Molecule",
+    "MoleculeFingerprint",
     "MoleculeTarget",
     "Prediction",
     "Project",

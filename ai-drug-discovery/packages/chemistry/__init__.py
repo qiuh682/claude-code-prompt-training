@@ -196,6 +196,25 @@ from packages.chemistry.similarity import (
     tanimoto_similarity_bytes,
 )
 
+# Fingerprint Index Adapters (for database storage)
+from packages.chemistry.fingerprint_index import (
+    FingerprintIndexAdapter,
+    IndexStats,
+    PineconeFingerprintIndex,
+    PostgresFingerprintIndex,
+    SimilarityMatch,
+    get_fingerprint_index,
+)
+
+# Molecule Repository (database operations)
+from packages.chemistry.molecule_repository import (
+    BulkUpsertResult,
+    MoleculeData,
+    MoleculeRepository,
+    UpsertResult,
+    process_and_store_molecule,
+)
+
 __all__ = [
     # Exceptions
     "ChemistryError",
@@ -327,4 +346,17 @@ __all__ = [
     "similarity_matrix",
     "find_similar_molecules",
     "cluster_by_similarity",
+    # Fingerprint Index Adapters
+    "FingerprintIndexAdapter",
+    "PostgresFingerprintIndex",
+    "PineconeFingerprintIndex",
+    "SimilarityMatch",
+    "IndexStats",
+    "get_fingerprint_index",
+    # Molecule Repository
+    "MoleculeRepository",
+    "MoleculeData",
+    "UpsertResult",
+    "BulkUpsertResult",
+    "process_and_store_molecule",
 ]

@@ -126,16 +126,48 @@ class Molecule(AuditedModel):
         comment="Rotatable bond count",
     )
 
+    # --- Extended Descriptors ---
+    num_rings: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+        comment="Total ring count",
+    )
+    num_aromatic_rings: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+        comment="Aromatic ring count",
+    )
+    num_heavy_atoms: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+        comment="Heavy atom count (non-hydrogen)",
+    )
+    fraction_sp3: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 4),
+        nullable=True,
+        comment="Fraction of sp3 carbons (0.0000-1.0000)",
+    )
+    lipinski_violations: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+        comment="Number of Lipinski Rule of 5 violations (0-4)",
+    )
+
     # --- Fingerprints (for similarity search) ---
     fingerprint_morgan: Mapped[bytes | None] = mapped_column(
         LargeBinary,
         nullable=True,
-        comment="Morgan fingerprint (2048 bits)",
+        comment="Morgan fingerprint (2048 bits, radius 2)",
     )
     fingerprint_maccs: Mapped[bytes | None] = mapped_column(
         LargeBinary,
         nullable=True,
-        comment="MACCS keys (166 bits)",
+        comment="MACCS keys (167 bits)",
+    )
+    fingerprint_rdkit: Mapped[bytes | None] = mapped_column(
+        LargeBinary,
+        nullable=True,
+        comment="RDKit topological fingerprint (2048 bits)",
     )
 
     # --- Naming ---
@@ -171,6 +203,9 @@ class Molecule(AuditedModel):
     project_associations = relationship(
         "ProjectMolecule", back_populates="molecule", cascade="all, delete-orphan"
     )
+    fingerprints = relationship(
+        "MoleculeFingerprint", back_populates="molecule", cascade="all, delete-orphan"
+    )
 
     # --- Table Configuration ---
     __table_args__ = (
@@ -193,6 +228,118 @@ class Molecule(AuditedModel):
 
     def __repr__(self) -> str:
         return f"<Molecule {self.inchi_key[:14]}... ({self.name or 'unnamed'})>"
+
+
+# =============================================================================
+# MoleculeFingerprint Model (for vector similarity indexing)
+# =============================================================================
+
+
+class MoleculeFingerprint(BaseModel, TimestampMixin):
+    """
+    Molecular fingerprint storage with metadata for similarity search.
+
+    This table stores fingerprints with their generation parameters, enabling:
+    - Multiple fingerprint types per molecule
+    - Vector similarity indexing (pg_similarity, pgvector, or external like Pinecone)
+    - Reproducibility tracking (parameters used to generate)
+
+    Fingerprint Index Strategies:
+    1. PostgreSQL pg_similarity: Install RDKit cartridge, use BIT(n) columns
+    2. pgvector: Convert fingerprints to float vectors, use ivfflat/hnsw indexes
+    3. Pinecone/external: Store fingerprints here, sync to vector DB for search
+    """
+
+    __tablename__ = "molecule_fingerprints"
+
+    # --- Foreign Key ---
+    molecule_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("molecules.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # --- Fingerprint Type ---
+    fingerprint_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        comment="morgan, maccs, rdkit, ecfp4, fcfp4, etc.",
+    )
+
+    # --- Fingerprint Data ---
+    fingerprint_bytes: Mapped[bytes] = mapped_column(
+        LargeBinary,
+        nullable=False,
+        comment="Raw fingerprint bytes",
+    )
+    fingerprint_base64: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Base64 encoded for JSON APIs",
+    )
+    fingerprint_hex: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Hex encoded for debugging",
+    )
+
+    # --- Generation Parameters (for reproducibility) ---
+    num_bits: Mapped[int] = mapped_column(
+        SmallInteger,
+        nullable=False,
+        comment="Number of bits in fingerprint",
+    )
+    radius: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+        comment="Radius for circular fingerprints (Morgan)",
+    )
+    use_features: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default="false",
+        comment="Feature-based (FCFP) vs atom-based (ECFP)",
+    )
+
+    # --- Statistics ---
+    num_on_bits: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+        comment="Number of bits set to 1",
+    )
+
+    # --- External Index Reference ---
+    external_index_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="ID in external vector DB (e.g., Pinecone vector ID)",
+    )
+    external_index_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When last synced to external index",
+    )
+
+    # --- Relationships ---
+    molecule = relationship("Molecule", back_populates="fingerprints")
+
+    # --- Table Configuration ---
+    __table_args__ = (
+        # Unique fingerprint type per molecule
+        UniqueConstraint(
+            "molecule_id",
+            "fingerprint_type",
+            name="uq_molecule_fingerprint_type",
+        ),
+        Index("ix_molecule_fp_type", "fingerprint_type"),
+        Index("ix_molecule_fp_external_id", "external_index_id"),
+        # Note: For pg_similarity or pgvector, add specialized indexes via migration
+        {"comment": "Molecular fingerprints for similarity search"},
+    )
+
+    def __repr__(self) -> str:
+        return f"<MoleculeFingerprint {self.fingerprint_type} ({self.num_bits} bits)>"
 
 
 # =============================================================================
