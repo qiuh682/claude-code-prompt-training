@@ -152,6 +152,50 @@ from packages.chemistry.utils import validate_smiles
 # Override with RDKit-based validation
 from packages.chemistry.smiles import validate_smiles, canonicalize_smiles
 
+# Features (descriptors + fingerprints)
+from packages.chemistry.features import (
+    DescriptorCalculationError,
+    Fingerprint,
+    FingerprintCalculationError,
+    FingerprintType as FeatureFingerprintType,
+    MolecularDescriptors as FeatureMolecularDescriptors,
+    calculate_all_fingerprints,
+    calculate_descriptors as calculate_descriptors_rdkit,
+    calculate_fingerprint as calculate_fingerprint_rdkit,
+    calculate_maccs_fingerprint,
+    calculate_morgan_fingerprint,
+    calculate_rdkit_fingerprint,
+)
+
+# Rendering (2D depiction)
+from packages.chemistry.render import (
+    ImageFormat,
+    RenderError,
+    RenderOptions,
+    mol_to_data_url,
+    render_molecule,
+    render_molecules_grid,
+    render_png,
+    render_reaction,
+    render_svg,
+)
+
+# Similarity search
+from packages.chemistry.similarity import (
+    FingerprintIndex,
+    SimilarityResult,
+    SimilaritySearchResult,
+    bulk_tanimoto,
+    cluster_by_similarity,
+    dice_similarity,
+    dice_similarity_bytes,
+    find_similar_molecules,
+    similarity_matrix,
+    tanimoto_from_smiles,
+    tanimoto_similarity,
+    tanimoto_similarity_bytes,
+)
+
 __all__ = [
     # Exceptions
     "ChemistryError",
@@ -248,4 +292,39 @@ __all__ = [
     "SmilesErrorCode",
     "ValidationResult",
     "CanonicalizeResult",
+    # Features (descriptors + fingerprints)
+    "Fingerprint",
+    "FeatureFingerprintType",
+    "FeatureMolecularDescriptors",
+    "DescriptorCalculationError",
+    "FingerprintCalculationError",
+    "calculate_descriptors_rdkit",
+    "calculate_fingerprint_rdkit",
+    "calculate_morgan_fingerprint",
+    "calculate_maccs_fingerprint",
+    "calculate_rdkit_fingerprint",
+    "calculate_all_fingerprints",
+    # Rendering
+    "ImageFormat",
+    "RenderOptions",
+    "RenderError",
+    "render_svg",
+    "render_png",
+    "render_molecule",
+    "render_molecules_grid",
+    "render_reaction",
+    "mol_to_data_url",
+    # Similarity
+    "SimilarityResult",
+    "SimilaritySearchResult",
+    "FingerprintIndex",
+    "tanimoto_similarity",
+    "tanimoto_similarity_bytes",
+    "dice_similarity",
+    "dice_similarity_bytes",
+    "tanimoto_from_smiles",
+    "bulk_tanimoto",
+    "similarity_matrix",
+    "find_similar_molecules",
+    "cluster_by_similarity",
 ]
