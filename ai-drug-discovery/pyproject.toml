@@ -32,6 +32,9 @@ dependencies = [
     # Auth
     "pyjwt>=2.8.0",
     "passlib[bcrypt]>=1.7.4",
+    # Chemistry
+    "rdkit>=2024.3.1",
+    "openpyxl>=3.1.0",  # Excel file support
 ]
 
 [project.optional-dependencies]
@@ -128,5 +131,7 @@ module = [
     "redis.*",
     "passlib.*",
     "jwt.*",
+    "rdkit.*",
+    "openpyxl.*",
 ]
 ignore_missing_imports = true
