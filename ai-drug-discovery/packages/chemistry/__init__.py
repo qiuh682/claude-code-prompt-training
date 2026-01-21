@@ -98,8 +98,59 @@ from packages.chemistry.pipeline import (
     process_molecule_input,
 )
 
-# Legacy compatibility
+# Batch CSV/Excel import
+from packages.chemistry.batch_import import (
+    BatchImporter,
+    BatchImportResult,
+    ColumnMapping,
+    FileType,
+    ImportedMolecule,
+    ImportErrorCode,
+    RowError as ImportRowError,
+    auto_detect_mapping,
+    detect_file_type,
+    import_molecules_from_csv,
+    import_molecules_from_excel,
+    import_molecules_from_file,
+    read_tabular_file,
+    validate_mapping,
+)
+
+# SDF/MOL parsing (dedicated module)
+from packages.chemistry.sdf_parser import (
+    MoleculeIdentifiers as SDFMoleculeIdentifiers,
+    ParsedMolecule,
+    ParseError,
+    SDFErrorCode,
+    SDFParseError,
+    SDFParseResult,
+    SDFParser,
+    iter_sdf_file,
+    parse_mol_block as parse_mol_block_sdf,
+    parse_sdf_bytes,
+    parse_sdf_file,
+    parse_sdf_string,
+)
+
+# SMILES processing (dedicated module)
+from packages.chemistry.smiles import (
+    CanonicalizeResult,
+    SmilesError,
+    SmilesErrorCode,
+    ValidationResult,
+    canonicalize_smiles_batch,
+    get_molecular_formula,
+    smiles_are_equivalent,
+    smiles_to_mol,
+    validate_smiles_batch,
+    validate_smiles_detailed,
+)
+
+# Legacy compatibility (basic validation)
 from packages.chemistry.utils import validate_smiles
+
+# Override with RDKit-based validation
+from packages.chemistry.smiles import validate_smiles, canonicalize_smiles
 
 __all__ = [
     # Exceptions
@@ -156,6 +207,45 @@ __all__ = [
     "process_batch_input",
     "process_and_store",
     "process_and_store_batch",
-    # Legacy
+    # Batch CSV/Excel import
+    "BatchImporter",
+    "BatchImportResult",
+    "ColumnMapping",
+    "FileType",
+    "ImportedMolecule",
+    "ImportErrorCode",
+    "ImportRowError",
+    "import_molecules_from_file",
+    "import_molecules_from_csv",
+    "import_molecules_from_excel",
+    "auto_detect_mapping",
+    "detect_file_type",
+    "read_tabular_file",
+    "validate_mapping",
+    # SDF/MOL parsing
+    "SDFParser",
+    "SDFParseResult",
+    "SDFParseError",
+    "SDFErrorCode",
+    "ParsedMolecule",
+    "ParseError",
+    "SDFMoleculeIdentifiers",
+    "parse_sdf_file",
+    "parse_sdf_string",
+    "parse_sdf_bytes",
+    "parse_mol_block_sdf",
+    "iter_sdf_file",
+    # SMILES processing
     "validate_smiles",
+    "validate_smiles_detailed",
+    "validate_smiles_batch",
+    "canonicalize_smiles",
+    "canonicalize_smiles_batch",
+    "smiles_to_mol",
+    "smiles_are_equivalent",
+    "get_molecular_formula",
+    "SmilesError",
+    "SmilesErrorCode",
+    "ValidationResult",
+    "CanonicalizeResult",
 ]
