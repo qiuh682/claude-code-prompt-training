@@ -974,6 +974,12 @@ class UploadProcessor:
         """
         Insert a new molecule into the database.
 
+        Stores:
+        - Chemical identifiers (SMILES, InChI, InChIKey)
+        - Computed descriptors (MW, LogP, HBD, HBA, TPSA, etc.)
+        - Fingerprints (Morgan, MACCS, RDKit)
+        - Provenance metadata (upload source, external ID)
+
         Args:
             upload: Upload record
             result: Validation result
@@ -1000,14 +1006,54 @@ class UploadProcessor:
                     "num_heavy_atoms": desc.num_heavy_atoms,
                     "fraction_sp3": desc.fraction_csp3,
                 }
+            except Exception as e:
+                logger.warning(f"Failed to calculate descriptors for row {result.row_number}: {e}")
+
+            # Calculate fingerprints
+            try:
+                fp = calculate_morgan_fingerprint(result.mol)
+                fingerprints["fingerprint_morgan"] = fp.to_bytes()
+            except Exception as e:
+                logger.warning(f"Failed to calculate Morgan fingerprint for row {result.row_number}: {e}")
+
+            try:
+                from rdkit.Chem import MACCSkeys
+                maccs = MACCSkeys.GenMACCSKeys(result.mol)
+                fingerprints["fingerprint_maccs"] = maccs.ToBitString().encode()
             except Exception:
                 pass
 
             try:
-                fp = calculate_morgan_fingerprint(result.mol)
-                fingerprints["fingerprint_morgan"] = fp.to_bytes()
+                from rdkit.Chem import RDKFingerprint
+                rdkit_fp = RDKFingerprint(result.mol)
+                fingerprints["fingerprint_rdkit"] = rdkit_fp.ToBitString().encode()
             except Exception:
                 pass
+
+        # Build metadata with provenance
+        metadata = {
+            "source_upload_id": str(upload.id),
+            "source_upload_name": upload.name,
+            "source_row_number": result.row_number,
+        }
+
+        # Add external_id if present
+        external_id = (
+            result.raw_data.get("external_id")
+            or result.raw_data.get("External_ID")
+            or result.raw_data.get("CAS")
+            or result.raw_data.get("cas")
+        )
+        if external_id:
+            metadata["external_id"] = external_id
+
+        # Get name from various possible field names
+        name = (
+            result.raw_data.get("name")
+            or result.raw_data.get("Name")
+            or result.raw_data.get("compound_name")
+            or result.raw_data.get("Compound_Name")
+        )
 
         # Create molecule
         molecule = Molecule(
@@ -1017,7 +1063,8 @@ class UploadProcessor:
             inchi=result.inchi,
             inchi_key=result.inchi_key,
             smiles_hash=result.smiles_hash,
-            name=result.raw_data.get("name") or result.raw_data.get("Name"),
+            name=name,
+            metadata_=metadata,
             **descriptors,
             **fingerprints,
         )
@@ -1032,7 +1079,13 @@ class UploadProcessor:
         result: ValidationResult,
     ) -> Molecule | None:
         """
-        Update an existing molecule.
+        Update an existing molecule (upsert logic).
+
+        Updates:
+        - Name (if provided and not already set)
+        - Metadata with new upload provenance
+        - Computed properties if missing
+        - Fingerprints if missing
 
         Args:
             upload: Upload record
@@ -1048,10 +1101,53 @@ class UploadProcessor:
         if not existing:
             return None
 
-        # Update name if provided
-        name = result.raw_data.get("name") or result.raw_data.get("Name")
-        if name:
+        # Update name if provided and molecule has no name
+        name = (
+            result.raw_data.get("name")
+            or result.raw_data.get("Name")
+            or result.raw_data.get("compound_name")
+        )
+        if name and not existing.name:
             existing.name = name
+
+        # Update metadata with upload provenance
+        metadata = existing.metadata_ or {}
+        if "upload_history" not in metadata:
+            metadata["upload_history"] = []
+        metadata["upload_history"].append({
+            "upload_id": str(upload.id),
+            "upload_name": upload.name,
+            "row_number": result.row_number,
+            "action": "update",
+        })
+        existing.metadata_ = metadata
+
+        # Update computed properties if missing and RDKit available
+        if RDKIT_AVAILABLE and result.mol:
+            # Update descriptors if missing
+            if existing.molecular_weight is None:
+                try:
+                    desc = calculate_descriptors_rdkit(result.mol)
+                    existing.molecular_weight = desc.molecular_weight
+                    existing.logp = desc.logp
+                    existing.hbd = desc.num_h_donors
+                    existing.hba = desc.num_h_acceptors
+                    existing.tpsa = desc.tpsa
+                    existing.rotatable_bonds = desc.num_rotatable_bonds
+                    existing.num_rings = desc.num_rings
+                    existing.num_aromatic_rings = desc.num_aromatic_rings
+                    existing.num_heavy_atoms = desc.num_heavy_atoms
+                    existing.fraction_sp3 = desc.fraction_csp3
+                except Exception:
+                    pass
+
+            # Update fingerprints if missing
+            if existing.fingerprint_morgan is None:
+                try:
+                    fp = calculate_morgan_fingerprint(result.mol)
+                    existing.fingerprint_morgan = fp.to_bytes()
+                except Exception:
+                    pass
 
         existing.updated_by = upload.created_by
         await self.db.flush()

@@ -107,12 +107,22 @@ class UploadConfirmRequest(BaseModel):
         default=True,
         description="Proceed with valid rows only (skip errors)",
     )
+    # Optional column mapping for CSV/Excel that need mapping
+    column_mapping: ColumnMapping | None = Field(
+        default=None,
+        description="Column mapping for CSV/Excel uploads (required if needs_column_mapping is true)",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "acknowledge_errors": True,
                 "proceed_with_valid_only": True,
+                "column_mapping": {
+                    "smiles": "SMILES",
+                    "name": "Compound_Name",
+                    "external_id": "CAS_Number",
+                },
             }
         }
     )

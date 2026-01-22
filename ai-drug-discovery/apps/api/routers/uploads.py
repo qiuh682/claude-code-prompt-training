@@ -519,7 +519,18 @@ async def update_column_mapping(
     response_model=UploadConfirmResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Confirm and process upload",
-    description="Confirm the upload and begin processing molecules into the database.",
+    description="""
+Confirm the upload and begin processing molecules into the database.
+
+**Idempotency:**
+- If upload is already PROCESSING, returns current status (no duplicate job)
+- If upload is already COMPLETED, returns final summary
+- Safe to call multiple times
+
+**Column Mapping:**
+- For CSV/Excel uploads with needs_column_mapping=true, column_mapping must be provided
+- Column mapping can also be provided for validated uploads to override inferred mapping
+    """,
     responses={
         409: {
             "model": UploadErrorResponse,
@@ -535,7 +546,15 @@ async def confirm_upload(
     db: Annotated[AsyncSession, Depends(get_async_session)],
     request: UploadConfirmRequest,
 ) -> UploadConfirmResponse:
-    """Confirm an upload and start processing."""
+    """
+    Confirm an upload and start processing.
+
+    Idempotency Rules:
+    - AWAITING_CONFIRM: Start processing, transition to PROCESSING
+    - PROCESSING: Return current status (job already running)
+    - COMPLETED: Return final summary (already done)
+    - Other states: Return 409 Conflict
+    """
     upload = await service.get_upload_with_relations(
         upload_id, user["organization_id"]
     )
@@ -545,7 +564,34 @@ async def confirm_upload(
             detail="Upload not found",
         )
 
-    # Check state
+    # ==========================================================================
+    # Idempotency: Handle already processing or completed uploads
+    # ==========================================================================
+
+    if upload.status == UploadStatus.PROCESSING:
+        # Already processing - return current status (idempotent)
+        return UploadConfirmResponse(
+            id=upload.id,
+            status=upload.status,
+            message="Upload is already being processed.",
+            estimated_completion_seconds=_estimate_remaining_time(upload),
+            links=build_links(upload.id),
+        )
+
+    if upload.status == UploadStatus.COMPLETED:
+        # Already completed - return success (idempotent)
+        return UploadConfirmResponse(
+            id=upload.id,
+            status=upload.status,
+            message="Upload has already been processed successfully.",
+            estimated_completion_seconds=0,
+            links=build_links(upload.id),
+        )
+
+    # ==========================================================================
+    # State validation
+    # ==========================================================================
+
     if upload.status != UploadStatus.AWAITING_CONFIRM:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -553,35 +599,110 @@ async def confirm_upload(
                 error="invalid_state_transition",
                 message=f"Upload is in '{upload.status.value}' state and cannot be confirmed",
                 current_status=upload.status,
-                allowed_actions=["cancel"] if upload.status == UploadStatus.VALIDATING else [],
+                allowed_actions=_get_allowed_actions(upload.status),
             ).model_dump(),
         )
 
-    # Check if user acknowledges errors
+    # ==========================================================================
+    # Column mapping validation for CSV/Excel
+    # ==========================================================================
+
+    if upload.needs_column_mapping:
+        if not request.column_mapping:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "column_mapping_required",
+                    "message": "This upload requires column mapping. Provide column_mapping in the request.",
+                    "available_columns": upload.available_columns or [],
+                    "inferred_mapping": upload.inferred_mapping,
+                },
+            )
+        # Update column mapping from request
+        upload.column_mapping = {
+            "smiles": request.column_mapping.smiles,
+            "name": request.column_mapping.name,
+            "external_id": request.column_mapping.external_id,
+        }
+        upload.needs_column_mapping = False
+        await db.commit()
+
+        # Need to run validation first with new mapping
+        upload.status = UploadStatus.INITIATED
+        if upload.progress:
+            upload.progress.phase = "revalidating"
+            upload.progress.processed_rows = 0
+        await db.commit()
+
+        # Start validation (not processing)
+        settings = get_settings()
+        if settings.environment == "production":
+            from apps.api.uploads.worker import enqueue_validation_job
+            await enqueue_validation_job(upload.id, user["organization_id"])
+        else:
+            background_tasks.add_task(
+                run_validation_task,
+                db,
+                service,
+                upload.id,
+                user["organization_id"],
+            )
+
+        return UploadConfirmResponse(
+            id=upload.id,
+            status=upload.status,
+            message="Column mapping accepted. Validation started. Check status for progress.",
+            estimated_completion_seconds=None,
+            links=build_links(upload.id),
+        )
+
+    # ==========================================================================
+    # Error acknowledgment
+    # ==========================================================================
+
     if upload.progress and upload.progress.invalid_rows > 0:
         if not request.acknowledge_errors:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Upload has validation errors. Set acknowledge_errors=true to proceed.",
+                detail={
+                    "error": "errors_not_acknowledged",
+                    "message": f"Upload has {upload.progress.invalid_rows} validation errors. Set acknowledge_errors=true to proceed with valid rows only.",
+                    "invalid_rows": upload.progress.invalid_rows,
+                    "valid_rows": upload.progress.valid_rows,
+                },
             )
 
+    # ==========================================================================
     # Confirm and start processing
+    # ==========================================================================
+
     await service.confirm_upload(upload)
 
-    # Start insertion in background
-    background_tasks.add_task(
-        run_insertion_task,
-        db,
-        service,
-        upload.id,
-        user["organization_id"],
-    )
+    # Start insertion job
+    settings = get_settings()
+    if settings.environment == "production":
+        from apps.api.uploads.worker import enqueue_processing_job
+        job_id = await enqueue_processing_job(upload.id, user["organization_id"])
+        if not job_id:
+            # Failed to enqueue - fall back to background task
+            background_tasks.add_task(
+                run_insertion_task,
+                db,
+                service,
+                upload.id,
+                user["organization_id"],
+            )
+    else:
+        background_tasks.add_task(
+            run_insertion_task,
+            db,
+            service,
+            upload.id,
+            user["organization_id"],
+        )
 
-    # Estimate completion time based on row count
-    estimated_seconds = None
-    if upload.progress and upload.progress.valid_rows > 0:
-        # Rough estimate: 10 rows per second
-        estimated_seconds = upload.progress.valid_rows // 10
+    # Estimate completion time
+    estimated_seconds = _estimate_remaining_time(upload)
 
     return UploadConfirmResponse(
         id=upload.id,
@@ -590,6 +711,35 @@ async def confirm_upload(
         estimated_completion_seconds=estimated_seconds,
         links=build_links(upload.id),
     )
+
+
+def _estimate_remaining_time(upload: Upload) -> int | None:
+    """Estimate remaining processing time in seconds."""
+    if not upload.progress:
+        return None
+    if upload.progress.total_rows == 0:
+        return None
+
+    # Estimate based on progress and typical rate (10 rows/sec)
+    rows_remaining = upload.progress.total_rows - upload.progress.processed_rows
+    if rows_remaining <= 0:
+        return 0
+    return max(1, rows_remaining // 10)
+
+
+def _get_allowed_actions(status: UploadStatus) -> list[str]:
+    """Get allowed actions for a given upload status."""
+    if status == UploadStatus.VALIDATING:
+        return ["wait", "cancel"]
+    elif status == UploadStatus.AWAITING_CONFIRM:
+        return ["confirm", "cancel"]
+    elif status == UploadStatus.PROCESSING:
+        return ["wait"]
+    elif status == UploadStatus.VALIDATION_FAILED:
+        return ["delete"]
+    elif status == UploadStatus.FAILED:
+        return ["delete", "retry"]
+    return []
 
 
 # =============================================================================
