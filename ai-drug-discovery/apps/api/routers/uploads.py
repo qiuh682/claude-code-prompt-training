@@ -32,6 +32,7 @@ from apps.api.uploads.error_codes import UploadErrorCode
 from apps.api.uploads.file_detection import detect_file_type
 from apps.api.uploads.schemas import (
     ColumnMapping,
+    ColumnMappingInfo,
     RowErrorResponse,
     UploadActionsResponse,
     UploadConfirmRequest,
@@ -329,12 +330,24 @@ async def get_upload_status(
             ),
         )
 
+    # Build column mapping info for CSV/Excel
+    column_mapping_info = None
+    if upload.file_type in (FileType.CSV, FileType.EXCEL):
+        column_mapping_info = ColumnMappingInfo(
+            needs_mapping=upload.needs_column_mapping,
+            available_columns=upload.available_columns or [],
+            inferred_mapping=upload.inferred_mapping,
+            current_mapping=upload.column_mapping,
+        )
+
     return UploadStatusResponse(
         id=upload.id,
         name=upload.name,
         status=upload.status,
+        file_type=upload.file_type,
         progress=progress,
         validation_summary=validation_summary,
+        column_mapping_info=column_mapping_info,
         summary=summary,
         error_message=upload.error_message,
         created_at=upload.created_at,
@@ -398,6 +411,102 @@ async def get_upload_errors(
         ],
         error_summary=error_summary,
     )
+
+
+# =============================================================================
+# PATCH /uploads/{id}/mapping - Update Column Mapping
+# =============================================================================
+
+
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class UpdateColumnMappingRequest(PydanticBaseModel):
+    """Request to update column mapping for CSV/Excel uploads."""
+
+    smiles_column: str = Field(..., description="Column containing SMILES")
+    name_column: str | None = Field(None, description="Column containing molecule names")
+    external_id_column: str | None = Field(None, description="Column containing external IDs")
+
+
+@router.patch(
+    "/{upload_id}/mapping",
+    response_model=UploadStatusResponse,
+    summary="Update column mapping",
+    description="Update column mapping for CSV/Excel uploads that need mapping.",
+)
+async def update_column_mapping(
+    upload_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    service: Annotated[UploadService, Depends(get_upload_service)],
+    user: Annotated[dict, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    request: UpdateColumnMappingRequest,
+) -> UploadStatusResponse:
+    """Update column mapping and restart validation."""
+    upload = await service.get_upload_with_relations(
+        upload_id, user["organization_id"]
+    )
+    if not upload:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Upload not found",
+        )
+
+    # Only allow for CSV/Excel that need mapping
+    if upload.file_type not in (FileType.CSV, FileType.EXCEL):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Column mapping is only applicable to CSV/Excel uploads",
+        )
+
+    if upload.status != UploadStatus.AWAITING_CONFIRM:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot update mapping in '{upload.status.value}' state",
+        )
+
+    # Validate that smiles_column exists in available columns
+    if upload.available_columns and request.smiles_column not in upload.available_columns:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Column '{request.smiles_column}' not found. Available: {upload.available_columns}",
+        )
+
+    # Update mapping
+    upload.column_mapping = {
+        "smiles": request.smiles_column,
+        "name": request.name_column,
+        "external_id": request.external_id_column,
+    }
+    upload.needs_column_mapping = False
+
+    # Reset to INITIATED and restart validation
+    upload.status = UploadStatus.INITIATED
+    if upload.progress:
+        upload.progress.phase = "revalidating"
+        upload.progress.processed_rows = 0
+        upload.progress.valid_rows = 0
+        upload.progress.invalid_rows = 0
+
+    await db.commit()
+
+    # Restart validation in background
+    settings = get_settings()
+    if settings.environment == "production":
+        from apps.api.uploads.worker import enqueue_validation_job
+        await enqueue_validation_job(upload.id, user["organization_id"])
+    else:
+        background_tasks.add_task(
+            run_validation_task,
+            db,
+            service,
+            upload.id,
+            user["organization_id"],
+        )
+
+    # Return updated status
+    return await get_upload_status(upload_id, service, user)
 
 
 # =============================================================================

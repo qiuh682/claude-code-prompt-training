@@ -825,3 +825,256 @@ class TestUploadSchemas:
         data = response.model_dump()
         assert data["name"] == "Test Upload"
         assert data["status"] == UploadStatus.INITIATED
+
+
+# =============================================================================
+# Test: Excel File Detection
+# =============================================================================
+
+
+class TestExcelFileDetection:
+    """Tests for Excel file type detection."""
+
+    def test_detect_xlsx_extension(self):
+        """Should detect Excel from .xlsx extension."""
+        assert detect_file_type_by_extension("data.xlsx") == FileType.EXCEL
+
+    def test_detect_xls_extension(self):
+        """Should detect Excel from .xls extension."""
+        assert detect_file_type_by_extension("data.xls") == FileType.EXCEL
+
+    def test_detect_xlsx_by_magic_bytes(self):
+        """Should detect XLSX by magic bytes (PK..)."""
+        # XLSX files are ZIP files with PK header
+        xlsx_magic = b"PK\x03\x04" + b"\x00" * 100
+        assert detect_file_type_by_content(xlsx_magic) == FileType.EXCEL
+
+    def test_detect_xls_by_magic_bytes(self):
+        """Should detect XLS by magic bytes."""
+        # Old Excel format magic bytes
+        xls_magic = b"\xd0\xcf\x11\xe0" + b"\x00" * 100
+        assert detect_file_type_by_content(xls_magic) == FileType.EXCEL
+
+
+# =============================================================================
+# Test: Column Inference
+# =============================================================================
+
+
+class TestColumnInference:
+    """Tests for CSV/Excel column mapping inference."""
+
+    def test_infer_smiles_column_lowercase(self):
+        """Should infer 'smiles' column."""
+        from apps.api.uploads.file_detection import infer_column_mapping
+
+        columns = ["id", "smiles", "name", "weight"]
+        mapping = infer_column_mapping(columns)
+        assert mapping["smiles"] == "smiles"
+
+    def test_infer_smiles_column_uppercase(self):
+        """Should infer 'SMILES' column (case-insensitive)."""
+        from apps.api.uploads.file_detection import infer_column_mapping
+
+        columns = ["ID", "SMILES", "Name"]
+        mapping = infer_column_mapping(columns)
+        assert mapping["smiles"] == "SMILES"
+
+    def test_infer_canonical_smiles(self):
+        """Should infer 'canonical_smiles' column."""
+        from apps.api.uploads.file_detection import infer_column_mapping
+
+        columns = ["id", "canonical_smiles", "compound_name"]
+        mapping = infer_column_mapping(columns)
+        assert mapping["smiles"] == "canonical_smiles"
+
+    def test_infer_name_column(self):
+        """Should infer name column."""
+        from apps.api.uploads.file_detection import infer_column_mapping
+
+        columns = ["smiles", "compound_name", "weight"]
+        mapping = infer_column_mapping(columns)
+        assert mapping["name"] == "compound_name"
+
+    def test_infer_external_id_column(self):
+        """Should infer external_id column from CAS."""
+        from apps.api.uploads.file_detection import infer_column_mapping
+
+        columns = ["smiles", "name", "cas_number"]
+        mapping = infer_column_mapping(columns)
+        assert mapping["external_id"] == "cas_number"
+
+    def test_no_smiles_column_returns_none(self):
+        """Should return None for smiles if not found."""
+        from apps.api.uploads.file_detection import infer_column_mapping
+
+        columns = ["id", "data", "value"]
+        mapping = infer_column_mapping(columns)
+        assert mapping["smiles"] is None
+
+    def test_detect_csv_columns(self):
+        """Should detect columns from CSV content."""
+        from apps.api.uploads.file_detection import detect_csv_columns
+
+        csv_content = b"SMILES,Name,Weight\nCCO,Ethanol,46.07\n"
+        columns = detect_csv_columns(csv_content)
+        assert columns == ["SMILES", "Name", "Weight"]
+
+    def test_detect_csv_columns_tsv(self):
+        """Should detect columns from TSV content."""
+        from apps.api.uploads.file_detection import detect_csv_columns
+
+        tsv_content = b"SMILES\tName\tWeight\nCCO\tEthanol\t46.07\n"
+        columns = detect_csv_columns(tsv_content)
+        assert columns == ["SMILES", "Name", "Weight"]
+
+
+# =============================================================================
+# Test: Validation Job Logic
+# =============================================================================
+
+
+class TestValidationJobLogic:
+    """Tests for validation job components."""
+
+    def test_parsed_row_creation(self):
+        """ParsedRow should store row data correctly."""
+        from apps.api.uploads.tasks import ParsedRow
+
+        row = ParsedRow(
+            row_number=5,
+            smiles="CCO",
+            name="Ethanol",
+            external_id="64-17-5",
+            raw_data={"SMILES": "CCO", "Name": "Ethanol"},
+        )
+        assert row.row_number == 5
+        assert row.smiles == "CCO"
+        assert row.name == "Ethanol"
+        assert row.external_id == "64-17-5"
+
+    def test_validation_result_valid(self):
+        """ValidationResult for valid molecule."""
+        from apps.api.uploads.tasks import ValidationResult
+
+        result = ValidationResult(
+            row_number=1,
+            is_valid=True,
+            canonical_smiles="CCO",
+            inchi="InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3",
+            inchi_key="LFQSCWFLJHTTHZ-UHFFFAOYSA-N",
+            smiles_hash="abc123",
+            mol=None,
+            error_code=None,
+            error_detail=None,
+            raw_data={},
+        )
+        assert result.is_valid is True
+        assert result.canonical_smiles == "CCO"
+        assert result.inchi_key is not None
+
+    def test_validation_result_invalid(self):
+        """ValidationResult for invalid molecule."""
+        from apps.api.uploads.tasks import ValidationResult
+        from apps.api.uploads.error_codes import UploadErrorCode
+
+        result = ValidationResult(
+            row_number=2,
+            is_valid=False,
+            canonical_smiles=None,
+            inchi=None,
+            inchi_key=None,
+            smiles_hash=None,
+            mol=None,
+            error_code=UploadErrorCode.INVALID_SMILES,
+            error_detail="Cannot parse SMILES",
+            raw_data={"smiles": "INVALID"},
+        )
+        assert result.is_valid is False
+        assert result.error_code == UploadErrorCode.INVALID_SMILES
+
+    def test_upload_processor_batch_sizes(self):
+        """UploadProcessor should have reasonable batch sizes."""
+        from apps.api.uploads.tasks import UploadProcessor
+
+        # Check class attributes exist
+        assert hasattr(UploadProcessor, "PARSE_BATCH_SIZE")
+        assert hasattr(UploadProcessor, "VALIDATE_BATCH_SIZE")
+        assert hasattr(UploadProcessor, "INSERT_BATCH_SIZE")
+        assert hasattr(UploadProcessor, "PROGRESS_UPDATE_INTERVAL")
+
+        # Reasonable values
+        assert UploadProcessor.PARSE_BATCH_SIZE >= 50
+        assert UploadProcessor.VALIDATE_BATCH_SIZE >= 10
+        assert UploadProcessor.INSERT_BATCH_SIZE >= 50
+
+
+# =============================================================================
+# Test: Needs Mapping State
+# =============================================================================
+
+
+class TestNeedsMappingState:
+    """Tests for needs_column_mapping state handling."""
+
+    def test_column_mapping_info_schema(self):
+        """ColumnMappingInfo should serialize correctly."""
+        from apps.api.uploads.schemas import ColumnMappingInfo
+
+        info = ColumnMappingInfo(
+            needs_mapping=True,
+            available_columns=["col1", "col2", "smiles"],
+            inferred_mapping={"smiles": "smiles", "name": None, "external_id": None},
+            current_mapping=None,
+        )
+        assert info.needs_mapping is True
+        assert len(info.available_columns) == 3
+
+    def test_column_mapping_info_defaults(self):
+        """ColumnMappingInfo should have correct defaults."""
+        from apps.api.uploads.schemas import ColumnMappingInfo
+
+        info = ColumnMappingInfo(needs_mapping=False)
+        assert info.available_columns == []
+        assert info.inferred_mapping is None
+        assert info.current_mapping is None
+
+    def test_upload_status_includes_file_type(self):
+        """UploadStatusResponse should include file_type."""
+        from apps.api.uploads.schemas import UploadStatusResponse
+
+        # Check field exists in schema
+        fields = UploadStatusResponse.model_fields
+        assert "file_type" in fields
+        assert "column_mapping_info" in fields
+
+
+# =============================================================================
+# Test: Error Codes
+# =============================================================================
+
+
+class TestValidationErrorCodes:
+    """Tests for validation error codes."""
+
+    def test_all_error_codes_have_messages(self):
+        """Every error code should have a human-readable message."""
+        from apps.api.uploads.error_codes import UploadErrorCode, ERROR_MESSAGES
+
+        for code in UploadErrorCode:
+            assert code in ERROR_MESSAGES, f"Missing message for {code}"
+
+    def test_get_error_message_with_detail(self):
+        """get_error_message should append detail."""
+        from apps.api.uploads.error_codes import UploadErrorCode, get_error_message
+
+        msg = get_error_message(UploadErrorCode.INVALID_SMILES, "bad input: XYZ")
+        assert "Cannot parse SMILES" in msg
+        assert "bad input: XYZ" in msg
+
+    def test_get_error_message_without_detail(self):
+        """get_error_message should work without detail."""
+        from apps.api.uploads.error_codes import UploadErrorCode, get_error_message
+
+        msg = get_error_message(UploadErrorCode.NO_ATOMS)
+        assert "no atoms" in msg.lower()

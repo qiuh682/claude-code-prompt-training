@@ -2,7 +2,8 @@
 Background tasks for upload processing.
 
 Handles:
-- File parsing (SDF, CSV, SMILES list)
+- File parsing (SDF, CSV, Excel, SMILES list)
+- Column mapping inference for CSV/Excel
 - Molecule validation
 - Duplicate detection
 - Database insertion
@@ -11,6 +12,7 @@ Handles:
 import asyncio
 import csv
 import hashlib
+import logging
 import time
 import uuid
 from decimal import Decimal
@@ -20,9 +22,16 @@ from typing import AsyncIterator, NamedTuple
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.uploads.error_codes import UploadErrorCode
+from apps.api.uploads.file_detection import (
+    detect_csv_columns,
+    detect_excel_columns,
+    infer_column_mapping,
+)
 from apps.api.uploads.service import UploadService
 from db.models.discovery import Molecule
 from db.models.upload import DuplicateAction, FileType, Upload, UploadRowError
+
+logger = logging.getLogger(__name__)
 
 # Import chemistry utilities
 try:
@@ -105,6 +114,11 @@ class UploadProcessor:
         This is called as a background task after upload creation.
         Transitions upload from INITIATED -> VALIDATING -> AWAITING_CONFIRM/VALIDATION_FAILED.
 
+        For CSV/Excel files without column mapping:
+        - Detects available columns
+        - Attempts to infer mapping
+        - If SMILES column cannot be inferred, moves to AWAITING_CONFIRM with needs_column_mapping=True
+
         Args:
             upload: Upload to validate
         """
@@ -114,6 +128,16 @@ class UploadProcessor:
 
             # Get file content
             file_content = await self.service.get_upload_file_content(upload)
+
+            # For CSV/Excel, check column mapping
+            if upload.file_type in (FileType.CSV, FileType.EXCEL):
+                needs_mapping = await self._check_column_mapping(upload, file_content)
+                if needs_mapping:
+                    # Move to AWAITING_CONFIRM with needs_mapping flag
+                    await self.service.complete_validation_needs_mapping(upload)
+                    return
+                # Reset file position after column check
+                file_content.seek(0)
 
             # Parse and validate
             total_rows = 0
@@ -291,6 +315,71 @@ class UploadProcessor:
             raise
 
     # =========================================================================
+    # Column Mapping Check (CSV/Excel)
+    # =========================================================================
+
+    async def _check_column_mapping(
+        self,
+        upload: Upload,
+        file_content: BytesIO,
+    ) -> bool:
+        """
+        Check if column mapping is needed for CSV/Excel files.
+
+        If mapping is not provided, attempts to infer it.
+        Updates upload record with available columns and inferred mapping.
+
+        Args:
+            upload: Upload record
+            file_content: File content
+
+        Returns:
+            True if user needs to provide mapping, False if we can proceed
+        """
+        # If mapping already provided, we're good
+        if upload.column_mapping and upload.column_mapping.get("smiles"):
+            return False
+
+        # Detect columns from file
+        content = file_content.read()
+        file_content.seek(0)
+
+        if upload.file_type == FileType.CSV:
+            columns = detect_csv_columns(content)
+        elif upload.file_type == FileType.EXCEL:
+            columns = detect_excel_columns(content)
+        else:
+            return False
+
+        if not columns:
+            # Can't detect columns - needs manual mapping
+            upload.needs_column_mapping = True
+            upload.available_columns = []
+            await self.db.commit()
+            return True
+
+        # Store available columns
+        upload.available_columns = columns
+
+        # Try to infer mapping
+        inferred = infer_column_mapping(columns)
+        upload.inferred_mapping = inferred
+
+        if inferred.get("smiles"):
+            # We found a SMILES column - use inferred mapping
+            upload.column_mapping = inferred
+            upload.needs_column_mapping = False
+            await self.db.commit()
+            logger.info(f"Auto-inferred column mapping for upload {upload.id}: {inferred}")
+            return False
+        else:
+            # Could not find SMILES column - user needs to provide mapping
+            upload.needs_column_mapping = True
+            await self.db.commit()
+            logger.info(f"Upload {upload.id} needs column mapping. Columns: {columns}")
+            return True
+
+    # =========================================================================
     # File Parsing
     # =========================================================================
 
@@ -311,6 +400,9 @@ class UploadProcessor:
         """
         if upload.file_type == FileType.CSV:
             async for batch in self._parse_csv(upload, file_content):
+                yield batch
+        elif upload.file_type == FileType.EXCEL:
+            async for batch in self._parse_excel(upload, file_content):
                 yield batch
         elif upload.file_type == FileType.SDF:
             async for batch in self._parse_sdf(upload, file_content):
@@ -359,6 +451,107 @@ class UploadProcessor:
 
         if batch:
             yield batch
+
+    async def _parse_excel(
+        self,
+        upload: Upload,
+        file_content: BytesIO,
+    ) -> AsyncIterator[list[ParsedRow]]:
+        """Parse Excel file."""
+        try:
+            import openpyxl
+        except ImportError:
+            raise ImportError("openpyxl is required for Excel parsing. Install with: pip install openpyxl")
+
+        mapping = upload.column_mapping or {}
+        smiles_col = mapping.get("smiles", "smiles")
+        name_col = mapping.get("name")
+        external_id_col = mapping.get("external_id")
+
+        # Load workbook
+        content = file_content.read()
+        wb = openpyxl.load_workbook(BytesIO(content), read_only=True)
+        ws = wb.active
+
+        if not ws:
+            return
+
+        # Get headers from first row
+        headers: list[str] = []
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+        if header_row:
+            headers = [str(cell) if cell else "" for cell in header_row]
+
+        # Find column indices
+        try:
+            smiles_idx = headers.index(smiles_col)
+        except ValueError:
+            # Try case-insensitive match
+            smiles_idx = None
+            for i, h in enumerate(headers):
+                if h.lower() == smiles_col.lower():
+                    smiles_idx = i
+                    break
+            if smiles_idx is None:
+                raise ValueError(f"SMILES column '{smiles_col}' not found in Excel headers: {headers}")
+
+        name_idx = None
+        if name_col:
+            for i, h in enumerate(headers):
+                if h.lower() == name_col.lower():
+                    name_idx = i
+                    break
+
+        external_id_idx = None
+        if external_id_col:
+            for i, h in enumerate(headers):
+                if h.lower() == external_id_col.lower():
+                    external_id_idx = i
+                    break
+
+        batch: list[ParsedRow] = []
+        row_number = 1  # 1-based, row 1 is header
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            row_number += 1
+            row_values = list(row)
+
+            # Get SMILES
+            smiles = ""
+            if smiles_idx < len(row_values) and row_values[smiles_idx]:
+                smiles = str(row_values[smiles_idx]).strip()
+
+            # Get name
+            name = None
+            if name_idx is not None and name_idx < len(row_values) and row_values[name_idx]:
+                name = str(row_values[name_idx]).strip()
+
+            # Get external ID
+            external_id = None
+            if external_id_idx is not None and external_id_idx < len(row_values) and row_values[external_id_idx]:
+                external_id = str(row_values[external_id_idx]).strip()
+
+            # Build raw_data dict
+            raw_data = {headers[i]: str(v) if v else "" for i, v in enumerate(row_values) if i < len(headers)}
+
+            parsed = ParsedRow(
+                row_number=row_number,
+                smiles=smiles,
+                name=name,
+                external_id=external_id,
+                raw_data=raw_data,
+            )
+            batch.append(parsed)
+
+            if len(batch) >= self.PARSE_BATCH_SIZE:
+                yield batch
+                batch = []
+                await asyncio.sleep(0)  # Yield control
+
+        if batch:
+            yield batch
+
+        wb.close()
 
     async def _parse_sdf(
         self,

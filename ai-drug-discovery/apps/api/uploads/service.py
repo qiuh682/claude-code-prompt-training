@@ -272,6 +272,24 @@ class UploadService:
         upload.validated_at = datetime.now(UTC)
         await self.db.commit()
 
+    async def complete_validation_needs_mapping(self, upload: Upload) -> None:
+        """
+        Complete validation phase but request column mapping from user.
+
+        Used when CSV/Excel file cannot have its SMILES column auto-detected.
+        Moves to AWAITING_CONFIRM state with needs_column_mapping=True.
+
+        Args:
+            upload: Upload that needs column mapping
+        """
+        upload.status = UploadStatus.AWAITING_CONFIRM
+        upload.needs_column_mapping = True
+
+        if upload.progress:
+            upload.progress.phase = "needs_column_mapping"
+
+        await self.db.commit()
+
     async def confirm_upload(self, upload: Upload) -> None:
         """
         Confirm upload and transition to PROCESSING state.

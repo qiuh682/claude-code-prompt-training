@@ -6,7 +6,6 @@ Detects file type by:
 2. Content inspection (magic bytes / patterns)
 """
 
-from enum import Enum
 from io import BytesIO
 from typing import BinaryIO
 
@@ -27,6 +26,12 @@ CSV_MARKERS = [
     b"Smiles",
     b",",  # CSV delimiter
 ]
+
+# Excel XLSX magic bytes (ZIP file format: PK..)
+XLSX_MAGIC = b"PK\x03\x04"
+
+# Old Excel XLS magic bytes
+XLS_MAGIC = b"\xd0\xcf\x11\xe0"
 
 
 def detect_file_type_by_extension(filename: str) -> FileType | None:
@@ -52,6 +57,10 @@ def detect_file_type_by_extension(filename: str) -> FileType | None:
         return FileType.CSV
     elif lower.endswith(".tsv"):
         return FileType.CSV
+    elif lower.endswith(".xlsx"):
+        return FileType.EXCEL
+    elif lower.endswith(".xls"):
+        return FileType.EXCEL
     elif lower.endswith(".txt"):
         return FileType.SMILES_LIST
     elif lower.endswith(".smi") or lower.endswith(".smiles"):
@@ -72,6 +81,12 @@ def detect_file_type_by_content(content: bytes, sample_size: int = 4096) -> File
         FileType or None if unknown
     """
     sample = content[:sample_size]
+
+    # Check for Excel magic bytes first (binary format)
+    if sample.startswith(XLSX_MAGIC):
+        return FileType.EXCEL
+    if sample.startswith(XLS_MAGIC):
+        return FileType.EXCEL
 
     # Check for SDF markers
     for marker in SDF_MARKERS:
@@ -158,6 +173,139 @@ def get_content_type_for_file_type(file_type: FileType) -> str:
     mapping = {
         FileType.SDF: "chemical/x-mdl-sdfile",
         FileType.CSV: "text/csv",
+        FileType.EXCEL: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         FileType.SMILES_LIST: "text/plain",
     }
     return mapping.get(file_type, "application/octet-stream")
+
+
+# =============================================================================
+# Column Inference for CSV/Excel
+# =============================================================================
+
+# Common SMILES column names (case-insensitive matching)
+SMILES_COLUMN_NAMES = [
+    "smiles",
+    "canonical_smiles",
+    "smi",
+    "structure",
+    "mol",
+    "molecule",
+    "compound",
+    "compound_smiles",
+]
+
+# Common name column names
+NAME_COLUMN_NAMES = [
+    "name",
+    "compound_name",
+    "molecule_name",
+    "mol_name",
+    "title",
+    "id",
+    "compound_id",
+]
+
+# Common external ID column names
+EXTERNAL_ID_COLUMN_NAMES = [
+    "external_id",
+    "cas",
+    "cas_number",
+    "registry",
+    "registry_number",
+    "chembl_id",
+    "pubchem_cid",
+]
+
+
+def infer_column_mapping(columns: list[str]) -> dict[str, str | None]:
+    """
+    Infer column mapping from available column names.
+
+    Args:
+        columns: List of column names from CSV/Excel header
+
+    Returns:
+        Dict with 'smiles', 'name', 'external_id' keys (values may be None)
+    """
+    lower_columns = {col.lower().strip(): col for col in columns}
+
+    mapping: dict[str, str | None] = {
+        "smiles": None,
+        "name": None,
+        "external_id": None,
+    }
+
+    # Find SMILES column
+    for name in SMILES_COLUMN_NAMES:
+        if name in lower_columns:
+            mapping["smiles"] = lower_columns[name]
+            break
+
+    # Find name column
+    for name in NAME_COLUMN_NAMES:
+        if name in lower_columns:
+            mapping["name"] = lower_columns[name]
+            break
+
+    # Find external ID column
+    for name in EXTERNAL_ID_COLUMN_NAMES:
+        if name in lower_columns:
+            mapping["external_id"] = lower_columns[name]
+            break
+
+    return mapping
+
+
+def detect_csv_columns(content: bytes) -> list[str]:
+    """
+    Detect column names from CSV content.
+
+    Args:
+        content: CSV file content
+
+    Returns:
+        List of column names from header row
+    """
+    try:
+        text = content.decode("utf-8", errors="ignore")
+        lines = text.split("\n")
+        if lines:
+            header = lines[0].strip()
+            # Detect delimiter
+            if "\t" in header:
+                return [col.strip() for col in header.split("\t")]
+            else:
+                return [col.strip() for col in header.split(",")]
+    except Exception:
+        pass
+    return []
+
+
+def detect_excel_columns(content: bytes) -> list[str]:
+    """
+    Detect column names from Excel content.
+
+    Args:
+        content: Excel file content
+
+    Returns:
+        List of column names from header row
+    """
+    try:
+        import openpyxl
+        from io import BytesIO
+
+        wb = openpyxl.load_workbook(BytesIO(content), read_only=True)
+        ws = wb.active
+        if ws:
+            # Get first row as headers
+            first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+            if first_row:
+                return [str(cell) if cell else "" for cell in first_row]
+    except ImportError:
+        # openpyxl not installed
+        pass
+    except Exception:
+        pass
+    return []

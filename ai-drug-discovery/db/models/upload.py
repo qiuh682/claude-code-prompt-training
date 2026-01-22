@@ -49,6 +49,7 @@ class FileType(str, Enum):
 
     SDF = "sdf"
     CSV = "csv"
+    EXCEL = "excel"
     SMILES_LIST = "smiles_list"
 
 
@@ -139,11 +140,26 @@ class Upload(BaseModel, TimestampMixin):
         comment="Tanimoto threshold for similarity-based duplicate detection",
     )
 
-    # --- CSV Column Mapping (null for SDF/SMILES) ---
+    # --- CSV/Excel Column Mapping (null for SDF/SMILES) ---
     column_mapping: Mapped[dict | None] = mapped_column(
         JSONB,
         nullable=True,
         comment='{"smiles": "SMILES_COL", "name": "Compound_Name", ...}',
+    )
+    needs_column_mapping: Mapped[bool] = mapped_column(
+        default=False,
+        nullable=False,
+        comment="True if CSV/Excel upload requires user to provide column mapping",
+    )
+    available_columns: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="List of column names detected in CSV/Excel file",
+    )
+    inferred_mapping: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="Auto-inferred column mapping suggestion",
     )
 
     # --- Error Information ---

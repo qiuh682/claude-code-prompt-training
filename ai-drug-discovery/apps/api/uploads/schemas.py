@@ -169,6 +169,27 @@ class ValidationSummaryResponse(BaseModel):
     )
 
 
+class ColumnMappingInfo(BaseModel):
+    """Information about column mapping for CSV/Excel uploads."""
+
+    needs_mapping: bool = Field(
+        ...,
+        description="True if user needs to provide column mapping",
+    )
+    available_columns: list[str] = Field(
+        default_factory=list,
+        description="List of column names detected in the file",
+    )
+    inferred_mapping: dict[str, str | None] | None = Field(
+        default=None,
+        description="Auto-inferred column mapping suggestion (may be partial)",
+    )
+    current_mapping: dict[str, str | None] | None = Field(
+        default=None,
+        description="Currently configured column mapping",
+    )
+
+
 class ResultSummaryResponse(BaseModel):
     """Final processing results for completed uploads."""
 
@@ -226,8 +247,10 @@ class UploadStatusResponse(BaseModel):
     id: UUID
     name: str
     status: UploadStatus
+    file_type: FileType | None = None
     progress: UploadProgressResponse | None = None
     validation_summary: ValidationSummaryResponse | None = None
+    column_mapping_info: ColumnMappingInfo | None = None
     summary: ResultSummaryResponse | None = None
     error_message: str | None = None
     created_at: datetime
