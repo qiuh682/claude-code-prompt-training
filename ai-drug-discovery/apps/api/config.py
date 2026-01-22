@@ -48,6 +48,22 @@ class Settings(BaseSettings):
     rate_limit_expensive_rpm: int = 10  # Expensive operations (ML predictions)
     rate_limit_window_seconds: int = 60  # Sliding window size
 
+    # File Storage
+    storage_backend: Literal["local", "s3"] = "local"
+    local_upload_path: str = "./uploads"
+
+    # S3/MinIO (production)
+    s3_bucket: str = ""
+    s3_endpoint_url: str | None = None  # Set for MinIO, None for AWS S3
+    s3_region: str = "us-east-1"
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: str | None = None
+
+    # Upload Limits
+    max_upload_size_mb: int = 100
+    max_rows_per_upload: int = 100000
+    upload_expiry_hours: int = 24  # Auto-cancel unconfirmed uploads
+
 
 @lru_cache
 def get_settings() -> Settings:

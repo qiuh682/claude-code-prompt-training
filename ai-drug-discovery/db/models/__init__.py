@@ -18,6 +18,17 @@ from db.models.discovery import (
     ProjectTarget,
     Target,
 )
+from db.models.upload import (
+    DuplicateAction,
+    FileType,
+    Upload,
+    UploadFile,
+    UploadProgress,
+    UploadResultSummary,
+    UploadRowError,
+    UploadStatus,
+    can_transition,
+)
 
 __all__ = [
     # Base models and mixins
@@ -36,4 +47,14 @@ __all__ = [
     "ProjectMolecule",
     "ProjectTarget",
     "Target",
+    # Upload models
+    "DuplicateAction",
+    "FileType",
+    "Upload",
+    "UploadFile",
+    "UploadProgress",
+    "UploadResultSummary",
+    "UploadRowError",
+    "UploadStatus",
+    "can_transition",
 ]
