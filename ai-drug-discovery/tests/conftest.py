@@ -32,10 +32,10 @@ def override_env() -> Generator[None, None, None]:
     """
     original_env = os.environ.copy()
 
-    # Set test database and redis URLs
+    # Set test database URL with asyncpg driver for async support
     os.environ.setdefault(
         "DATABASE_URL",
-        "postgresql://postgres:postgres@localhost:5433/drugdiscovery_test",
+        "postgresql+asyncpg://postgres:postgres@localhost:5433/drugdiscovery_test",
     )
     os.environ.setdefault(
         "REDIS_URL",

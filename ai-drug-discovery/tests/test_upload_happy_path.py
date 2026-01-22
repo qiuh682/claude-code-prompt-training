@@ -11,6 +11,17 @@ These tests use:
 - Async test fixtures with real test database
 - Synchronous task execution (no background workers)
 - Proper cleanup between tests
+
+Requirements:
+- PostgreSQL running on localhost:5433
+- Test database 'drugdiscovery_test' created
+- Redis running on localhost:6380 (optional)
+
+To run:
+    pytest tests/test_upload_happy_path.py -v
+
+To skip if database unavailable:
+    pytest tests/test_upload_happy_path.py -v -m "not integration"
 """
 
 import asyncio
@@ -42,23 +53,50 @@ from db.models.upload import (
 )
 
 
+# Check if test database is available
+def _check_db_available() -> bool:
+    """Check if test database is available."""
+    try:
+        from sqlalchemy import create_engine, text
+        sync_url = "postgresql://postgres:postgres@localhost:5433/drugdiscovery_test"
+        engine = create_engine(sync_url, pool_pre_ping=True)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
+# Skip all tests in this module if database is not available
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not _check_db_available(),
+        reason="Test database not available (requires PostgreSQL on localhost:5433 with 'drugdiscovery_test' database)"
+    ),
+]
+
+
 # =============================================================================
 # Test Configuration
 # =============================================================================
 
-# Test database URL (async)
-TEST_DATABASE_URL = os.environ.get(
+# Test database URLs
+# Sync URL for table cleanup (uses psycopg2)
+TEST_SYNC_DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5433/drugdiscovery_test",
-)
+    "postgresql+asyncpg://postgres:postgres@localhost:5433/drugdiscovery_test",
+).replace("+asyncpg", "")
 
-# Convert to async URL
-if TEST_DATABASE_URL.startswith("postgresql://"):
-    TEST_ASYNC_DATABASE_URL = TEST_DATABASE_URL.replace(
+# Async URL for async operations (uses asyncpg)
+TEST_ASYNC_DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@localhost:5433/drugdiscovery_test",
+)
+if not TEST_ASYNC_DATABASE_URL.startswith("postgresql+asyncpg://"):
+    TEST_ASYNC_DATABASE_URL = TEST_ASYNC_DATABASE_URL.replace(
         "postgresql://", "postgresql+asyncpg://"
     )
-else:
-    TEST_ASYNC_DATABASE_URL = TEST_DATABASE_URL
 
 
 # =============================================================================
@@ -106,8 +144,8 @@ def event_loop():
 
 @pytest.fixture(scope="session")
 def sync_engine():
-    """Create sync engine for table setup."""
-    engine = create_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    """Create sync engine for table setup (uses psycopg2)."""
+    engine = create_engine(TEST_SYNC_DATABASE_URL, pool_pre_ping=True)
     return engine
 
 
@@ -201,7 +239,7 @@ def app() -> FastAPI:
     """Get FastAPI application."""
     # Set test environment
     os.environ["ENVIRONMENT"] = "development"
-    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+    os.environ["DATABASE_URL"] = TEST_ASYNC_DATABASE_URL
 
     from apps.api.main import app as fastapi_app
     return fastapi_app

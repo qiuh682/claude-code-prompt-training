@@ -418,7 +418,7 @@ async def get_upload_errors(
 # =============================================================================
 
 
-from pydantic import BaseModel as PydanticBaseModel
+from pydantic import BaseModel as PydanticBaseModel, Field
 
 
 class UpdateColumnMappingRequest(PydanticBaseModel):
