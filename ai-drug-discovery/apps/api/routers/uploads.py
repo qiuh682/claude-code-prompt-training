@@ -11,6 +11,7 @@ Endpoints:
 
 import uuid
 from decimal import Decimal
+from io import BytesIO
 from typing import Annotated
 
 from fastapi import (
@@ -26,7 +27,9 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.config import get_settings
 from apps.api.uploads.error_codes import UploadErrorCode
+from apps.api.uploads.file_detection import detect_file_type
 from apps.api.uploads.schemas import (
     ColumnMapping,
     RowErrorResponse,
@@ -119,7 +122,9 @@ async def create_upload(
     db: Annotated[AsyncSession, Depends(get_async_session)],
     file: Annotated[FastAPIUploadFile, File(description="File to upload")],
     name: Annotated[str, Form(description="Name for this upload")],
-    file_type: Annotated[FileType, Form(description="Type of file")],
+    file_type: Annotated[
+        FileType | None, Form(description="Type of file (auto-detected if not provided)")
+    ] = None,
     duplicate_action: Annotated[
         DuplicateAction, Form(description="How to handle duplicates")
     ] = DuplicateAction.SKIP,
@@ -141,10 +146,32 @@ async def create_upload(
 
     The file will be stored and validation will start in the background.
     Check the status endpoint to track progress.
+
+    File type can be auto-detected from extension and content if not provided.
     """
+    # Read file content
+    content = await file.read()
+
+    # Validate file size
+    if len(content) > service.MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File size exceeds maximum {service.MAX_FILE_SIZE // (1024*1024)}MB",
+        )
+
+    # Auto-detect file type if not provided
+    detected_file_type = file_type
+    if detected_file_type is None:
+        detected_file_type = detect_file_type(file.filename, content)
+        if detected_file_type is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not detect file type. Please specify file_type parameter.",
+            )
+
     # Validate file type has column mapping for CSV
     column_mapping = None
-    if file_type == FileType.CSV:
+    if detected_file_type == FileType.CSV:
         if not smiles_column:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -169,24 +196,14 @@ async def create_upload(
                 detail="similarity_threshold must be a decimal between 0.5 and 1.0",
             )
 
-    # Validate file size
-    content = await file.read()
-    if len(content) > service.MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File size exceeds maximum {service.MAX_FILE_SIZE // (1024*1024)}MB",
-        )
-
     # Create upload
-    from io import BytesIO
-
     file_obj = BytesIO(content)
 
     upload = await service.create_upload(
         organization_id=user["organization_id"],
         user_id=user["id"],
         name=name,
-        file_type=file_type,
+        file_type=detected_file_type,
         file=file_obj,
         filename=file.filename or "upload",
         content_type=file.content_type or "application/octet-stream",
@@ -195,14 +212,22 @@ async def create_upload(
         similarity_threshold=threshold,
     )
 
-    # Start validation in background
-    background_tasks.add_task(
-        run_validation_task,
-        db,
-        service,
-        upload.id,
-        user["organization_id"],
-    )
+    # Enqueue validation job
+    # Use ARQ in production, BackgroundTasks in development
+    settings = get_settings()
+    if settings.environment == "production":
+        # Use ARQ job queue
+        from apps.api.uploads.worker import enqueue_validation_job
+        await enqueue_validation_job(upload.id, user["organization_id"])
+    else:
+        # Use FastAPI BackgroundTasks for development
+        background_tasks.add_task(
+            run_validation_task,
+            db,
+            service,
+            upload.id,
+            user["organization_id"],
+        )
 
     # Build response
     return UploadResponse(
