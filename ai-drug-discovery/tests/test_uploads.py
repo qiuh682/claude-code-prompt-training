@@ -1260,3 +1260,452 @@ class TestProcessingJobLogic:
                 "molecules_updated",
                 "errors_count",
             ]
+
+
+# =============================================================================
+# Test: Duplicate Detection Module
+# =============================================================================
+
+
+class TestFindDuplicatesInBatch:
+    """Tests for find_duplicates_in_batch function (pure Python, no DB)."""
+
+    def test_no_duplicates(self):
+        """Should return empty dict when no duplicates in batch."""
+        from apps.api.uploads.duplicate_detection import find_duplicates_in_batch
+
+        inchi_keys = [
+            "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",  # Ethanol
+            "QTBSBXVTEAMEQO-UHFFFAOYSA-N",  # Acetic acid
+            "UHOVQNZJYSORNB-UHFFFAOYSA-N",  # Benzene
+        ]
+        result = find_duplicates_in_batch(inchi_keys)
+        assert result == {}
+
+    def test_finds_duplicates(self):
+        """Should find InChIKeys that appear multiple times."""
+        from apps.api.uploads.duplicate_detection import find_duplicates_in_batch
+
+        inchi_keys = [
+            "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",  # Ethanol (first)
+            "QTBSBXVTEAMEQO-UHFFFAOYSA-N",  # Acetic acid
+            "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",  # Ethanol (duplicate)
+            "UHOVQNZJYSORNB-UHFFFAOYSA-N",  # Benzene
+        ]
+        result = find_duplicates_in_batch(inchi_keys)
+
+        assert len(result) == 1
+        assert "LFQSCWFLJHTTHZ-UHFFFAOYSA-N" in result
+        # First occurrence at index 0, duplicate at index 2
+        assert result["LFQSCWFLJHTTHZ-UHFFFAOYSA-N"] == [0, 2]
+
+    def test_finds_multiple_duplicates(self):
+        """Should find multiple InChIKeys that have duplicates."""
+        from apps.api.uploads.duplicate_detection import find_duplicates_in_batch
+
+        inchi_keys = [
+            "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",  # Ethanol
+            "QTBSBXVTEAMEQO-UHFFFAOYSA-N",  # Acetic acid
+            "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",  # Ethanol (dup)
+            "QTBSBXVTEAMEQO-UHFFFAOYSA-N",  # Acetic acid (dup)
+            "UHOVQNZJYSORNB-UHFFFAOYSA-N",  # Benzene
+        ]
+        result = find_duplicates_in_batch(inchi_keys)
+
+        assert len(result) == 2
+        assert "LFQSCWFLJHTTHZ-UHFFFAOYSA-N" in result
+        assert "QTBSBXVTEAMEQO-UHFFFAOYSA-N" in result
+
+    def test_triple_occurrence(self):
+        """Should track all occurrences of tripled InChIKey."""
+        from apps.api.uploads.duplicate_detection import find_duplicates_in_batch
+
+        inchi_keys = [
+            "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",  # First
+            "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",  # Second
+            "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",  # Third
+        ]
+        result = find_duplicates_in_batch(inchi_keys)
+
+        assert len(result) == 1
+        assert result["LFQSCWFLJHTTHZ-UHFFFAOYSA-N"] == [0, 1, 2]
+
+    def test_handles_empty_keys(self):
+        """Should skip empty/None InChIKeys."""
+        from apps.api.uploads.duplicate_detection import find_duplicates_in_batch
+
+        inchi_keys = [
+            "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",
+            "",  # Empty
+            "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",  # Duplicate
+            "",  # Empty (but empty strings won't track as duplicates)
+        ]
+        result = find_duplicates_in_batch(inchi_keys)
+
+        assert len(result) == 1
+        assert "LFQSCWFLJHTTHZ-UHFFFAOYSA-N" in result
+        # Empty strings are skipped
+        assert "" not in result
+
+    def test_empty_list(self):
+        """Should handle empty list."""
+        from apps.api.uploads.duplicate_detection import find_duplicates_in_batch
+
+        result = find_duplicates_in_batch([])
+        assert result == {}
+
+
+class TestDuplicateDataClasses:
+    """Tests for duplicate detection data classes."""
+
+    def test_exact_duplicate_creation(self):
+        """Should create ExactDuplicate with required fields."""
+        from apps.api.uploads.duplicate_detection import ExactDuplicate
+
+        mol_id = uuid.uuid4()
+        dup = ExactDuplicate(
+            inchi_key="LFQSCWFLJHTTHZ-UHFFFAOYSA-N",
+            existing_molecule_id=mol_id,
+            existing_molecule_name="Ethanol",
+            source="database",
+        )
+
+        assert dup.inchi_key == "LFQSCWFLJHTTHZ-UHFFFAOYSA-N"
+        assert dup.existing_molecule_id == mol_id
+        assert dup.existing_molecule_name == "Ethanol"
+        assert dup.source == "database"
+
+    def test_similar_duplicate_creation(self):
+        """Should create SimilarDuplicate with required fields."""
+        from apps.api.uploads.duplicate_detection import SimilarDuplicate
+
+        mol_id = uuid.uuid4()
+        dup = SimilarDuplicate(
+            inchi_key="LFQSCWFLJHTTHZ-UHFFFAOYSA-N",
+            similar_molecule_id=mol_id,
+            similar_molecule_inchi_key="QTBSBXVTEAMEQO-UHFFFAOYSA-N",
+            similar_molecule_name="Methanol",
+            similarity_score=0.92,
+            molecular_formula="C2H6O",
+        )
+
+        assert dup.similarity_score == 0.92
+        assert dup.molecular_formula == "C2H6O"
+
+    def test_duplicate_check_result_is_duplicate(self):
+        """DuplicateCheckResult.is_duplicate property should work."""
+        from apps.api.uploads.duplicate_detection import DuplicateCheckResult, ExactDuplicate
+
+        # No duplicate
+        result = DuplicateCheckResult(
+            row_number=1,
+            inchi_key="TEST-KEY",
+            molecular_formula="C2H6O",
+            is_exact_duplicate=False,
+            exact_duplicate=None,
+            is_similar_duplicate=False,
+            similar_duplicates=[],
+        )
+        assert result.is_duplicate is False
+
+        # Exact duplicate
+        result = DuplicateCheckResult(
+            row_number=2,
+            inchi_key="TEST-KEY",
+            molecular_formula="C2H6O",
+            is_exact_duplicate=True,
+            exact_duplicate=ExactDuplicate(
+                inchi_key="TEST-KEY",
+                existing_molecule_id=uuid.uuid4(),
+                existing_molecule_name=None,
+                source="database",
+            ),
+            is_similar_duplicate=False,
+            similar_duplicates=[],
+        )
+        assert result.is_duplicate is True
+
+    def test_batch_duplicate_result_counts(self):
+        """BatchDuplicateResult should provide correct counts."""
+        from apps.api.uploads.duplicate_detection import (
+            BatchDuplicateResult,
+            ExactDuplicate,
+            SimilarDuplicate,
+        )
+
+        result = BatchDuplicateResult(
+            total_checked=100,
+            exact_duplicates=[
+                ExactDuplicate(
+                    inchi_key="KEY1",
+                    existing_molecule_id=uuid.uuid4(),
+                    existing_molecule_name=None,
+                    source="database",
+                ),
+                ExactDuplicate(
+                    inchi_key="KEY2",
+                    existing_molecule_id=uuid.uuid4(),
+                    existing_molecule_name=None,
+                    source="batch",
+                ),
+            ],
+            similar_duplicates=[
+                SimilarDuplicate(
+                    inchi_key="KEY3",
+                    similar_molecule_id=uuid.uuid4(),
+                    similar_molecule_inchi_key="KEY4",
+                    similar_molecule_name=None,
+                    similarity_score=0.95,
+                    molecular_formula=None,
+                ),
+            ],
+            duplicates_in_batch=["KEY5", "KEY6"],
+        )
+
+        assert result.exact_count == 2
+        assert result.similar_count == 1
+        assert result.batch_duplicate_count == 2
+
+
+class TestSummarizeDuplicates:
+    """Tests for summarize_duplicates function."""
+
+    def test_summarize_empty(self):
+        """Should handle empty results."""
+        from apps.api.uploads.duplicate_detection import summarize_duplicates
+
+        summary = summarize_duplicates(
+            exact_duplicates=[],
+            similar_duplicates=[],
+            total_rows=100,
+        )
+
+        assert summary.total_rows == 100
+        assert summary.unique_molecules == 100
+        assert summary.exact_duplicates_db == 0
+        assert summary.exact_duplicates_batch == 0
+        assert summary.similar_duplicates == 0
+        assert summary.highest_similarity is None
+        assert summary.formulas_checked == 0
+
+    def test_summarize_with_duplicates(self):
+        """Should correctly summarize duplicates."""
+        from apps.api.uploads.duplicate_detection import (
+            ExactDuplicate,
+            SimilarDuplicate,
+            summarize_duplicates,
+        )
+
+        exact_dups = [
+            ExactDuplicate(
+                inchi_key="KEY1",
+                existing_molecule_id=uuid.uuid4(),
+                existing_molecule_name=None,
+                source="database",
+            ),
+            ExactDuplicate(
+                inchi_key="KEY2",
+                existing_molecule_id=uuid.uuid4(),
+                existing_molecule_name=None,
+                source="database",
+            ),
+            ExactDuplicate(
+                inchi_key="KEY3",
+                existing_molecule_id=uuid.uuid4(),
+                existing_molecule_name=None,
+                source="batch",
+            ),
+        ]
+        similar_dups = [
+            SimilarDuplicate(
+                inchi_key="KEY4",
+                similar_molecule_id=uuid.uuid4(),
+                similar_molecule_inchi_key="KEY5",
+                similar_molecule_name=None,
+                similarity_score=0.92,
+                molecular_formula="C2H6O",
+            ),
+            SimilarDuplicate(
+                inchi_key="KEY6",
+                similar_molecule_id=uuid.uuid4(),
+                similar_molecule_inchi_key="KEY7",
+                similar_molecule_name=None,
+                similarity_score=0.98,
+                molecular_formula="C3H8O",
+            ),
+        ]
+
+        summary = summarize_duplicates(
+            exact_duplicates=exact_dups,
+            similar_duplicates=similar_dups,
+            total_rows=100,
+        )
+
+        assert summary.total_rows == 100
+        assert summary.exact_duplicates_db == 2  # Two from "database"
+        assert summary.exact_duplicates_batch == 1  # One from "batch"
+        assert summary.similar_duplicates == 2
+        assert summary.highest_similarity == 0.98
+        assert summary.formulas_checked == 2  # Two distinct formulas
+
+
+class TestDuplicateSummaryResponse:
+    """Tests for DuplicateSummaryResponse schema."""
+
+    def test_schema_creation(self):
+        """Should create schema with all fields."""
+        from apps.api.uploads.schemas import DuplicateSummaryResponse
+
+        response = DuplicateSummaryResponse(
+            exact_duplicates=5,
+            similar_duplicates=3,
+            duplicates_in_batch=2,
+            highest_similarity=0.97,
+            similarity_threshold=0.85,
+        )
+
+        assert response.exact_duplicates == 5
+        assert response.similar_duplicates == 3
+        assert response.duplicates_in_batch == 2
+        assert response.highest_similarity == 0.97
+        assert response.similarity_threshold == 0.85
+
+    def test_schema_optional_fields(self):
+        """Should handle optional fields."""
+        from apps.api.uploads.schemas import DuplicateSummaryResponse
+
+        response = DuplicateSummaryResponse(
+            exact_duplicates=0,
+            similar_duplicates=0,
+            duplicates_in_batch=0,
+        )
+
+        assert response.highest_similarity is None
+        assert response.similarity_threshold is None
+
+
+class TestProgressResponseWithDuplicates:
+    """Tests for UploadProgressResponse with duplicate info."""
+
+    def test_progress_with_duplicate_summary(self):
+        """Progress response should include duplicate summary."""
+        from apps.api.uploads.schemas import (
+            DuplicateSummaryResponse,
+            UploadProgressResponse,
+        )
+
+        dup_summary = DuplicateSummaryResponse(
+            exact_duplicates=5,
+            similar_duplicates=2,
+            duplicates_in_batch=1,
+            highest_similarity=0.96,
+            similarity_threshold=0.85,
+        )
+
+        progress = UploadProgressResponse(
+            phase="checking_duplicates",
+            total_rows=100,
+            processed_rows=50,
+            valid_rows=45,
+            invalid_rows=5,
+            duplicate_exact=5,
+            duplicate_similar=2,
+            percent_complete=50.0,
+            duplicates=dup_summary,
+        )
+
+        assert progress.duplicates is not None
+        assert progress.duplicates.exact_duplicates == 5
+        assert progress.duplicates.similar_duplicates == 2
+
+    def test_progress_without_duplicate_summary(self):
+        """Progress response should work without duplicate summary."""
+        from apps.api.uploads.schemas import UploadProgressResponse
+
+        progress = UploadProgressResponse(
+            phase="parsing",
+            total_rows=100,
+            processed_rows=10,
+            valid_rows=10,
+            invalid_rows=0,
+            duplicate_exact=0,
+            duplicate_similar=0,
+            percent_complete=10.0,
+        )
+
+        assert progress.duplicates is None
+
+
+class TestResultSummaryWithDuplicates:
+    """Tests for ResultSummaryResponse with detailed duplicates."""
+
+    def test_result_summary_with_duplicates(self):
+        """Result summary should include detailed duplicate info."""
+        from apps.api.uploads.schemas import (
+            DuplicateSummaryResponse,
+            ResultSummaryResponse,
+        )
+
+        dup_summary = DuplicateSummaryResponse(
+            exact_duplicates=10,
+            similar_duplicates=5,
+            duplicates_in_batch=3,
+            highest_similarity=0.99,
+            similarity_threshold=0.85,
+        )
+
+        summary = ResultSummaryResponse(
+            molecules_created=82,
+            molecules_updated=0,
+            molecules_skipped=15,
+            errors_count=3,
+            exact_duplicates_found=10,
+            similar_duplicates_found=5,
+            processing_duration_seconds=12.5,
+            duplicates=dup_summary,
+        )
+
+        assert summary.duplicates is not None
+        assert summary.duplicates.duplicates_in_batch == 3
+
+
+class TestDuplicateDetectionModuleExports:
+    """Tests that duplicate detection module exports correctly."""
+
+    def test_module_exports_all_classes(self):
+        """All classes should be exported from module."""
+        from apps.api.uploads import (
+            BatchDuplicateResult,
+            DuplicateCheckResult,
+            DuplicateSummary,
+            ExactDuplicate,
+            SimilarDuplicate,
+        )
+
+        # Just verify they're importable
+        assert ExactDuplicate is not None
+        assert SimilarDuplicate is not None
+        assert DuplicateCheckResult is not None
+        assert BatchDuplicateResult is not None
+        assert DuplicateSummary is not None
+
+    def test_module_exports_all_functions(self):
+        """All functions should be exported from module."""
+        from apps.api.uploads import (
+            check_duplicates,
+            check_duplicates_batch,
+            find_duplicates_in_batch,
+            find_exact_duplicates,
+            find_similar_duplicates,
+            find_similar_duplicates_batch,
+            summarize_duplicates,
+        )
+
+        # Just verify they're importable
+        assert find_exact_duplicates is not None
+        assert find_duplicates_in_batch is not None
+        assert find_similar_duplicates is not None
+        assert find_similar_duplicates_batch is not None
+        assert check_duplicates is not None
+        assert check_duplicates_batch is not None
+        assert summarize_duplicates is not None

@@ -143,6 +143,31 @@ class UploadFileResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class DuplicateSummaryResponse(BaseModel):
+    """Summary of duplicate detection results."""
+
+    exact_duplicates: int = Field(
+        ...,
+        description="Molecules with identical InChIKey in database",
+    )
+    similar_duplicates: int = Field(
+        ...,
+        description="Molecules above similarity threshold",
+    )
+    duplicates_in_batch: int = Field(
+        ...,
+        description="Duplicate InChIKeys within this upload",
+    )
+    highest_similarity: float | None = Field(
+        default=None,
+        description="Highest Tanimoto similarity score found",
+    )
+    similarity_threshold: float | None = Field(
+        default=None,
+        description="Threshold used for similarity detection",
+    )
+
+
 class UploadProgressResponse(BaseModel):
     """Progress tracking in upload response."""
 
@@ -154,6 +179,10 @@ class UploadProgressResponse(BaseModel):
     duplicate_exact: int
     duplicate_similar: int
     percent_complete: float
+    duplicates: DuplicateSummaryResponse | None = Field(
+        default=None,
+        description="Duplicate detection summary (populated during/after validation)",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -210,6 +239,10 @@ class ResultSummaryResponse(BaseModel):
     exact_duplicates_found: int
     similar_duplicates_found: int
     processing_duration_seconds: float | None
+    duplicates: DuplicateSummaryResponse | None = Field(
+        default=None,
+        description="Detailed duplicate detection summary",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
