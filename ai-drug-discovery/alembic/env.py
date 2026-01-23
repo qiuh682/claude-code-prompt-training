@@ -3,21 +3,38 @@
 import os
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import create_engine, pool
 
-from alembic import context
+# Import Base first
+from db.base import Base
+
+# Import all models here so Alembic can detect them for autogenerate
+# Auth models
 from apps.api.auth.models import (  # noqa: F401
     ApiKey,
     Membership,
     Organization,
+    PasswordResetToken,
     RefreshToken,
     Team,
     User,
 )
-from db.base import Base
 
-# Import all models here so Alembic can detect them
-from db.models.base_model import BaseModel  # noqa: F401
+# Base model mixins
+from db.models.base_model import AuditedModel, BaseModel  # noqa: F401
+
+# Discovery domain models (Task 1.3)
+from db.models.discovery import (  # noqa: F401
+    Assay,
+    Molecule,
+    MoleculeTarget,
+    Prediction,
+    Project,
+    ProjectMolecule,
+    ProjectTarget,
+    Target,
+)
 
 # this is the Alembic Config object
 config = context.config
