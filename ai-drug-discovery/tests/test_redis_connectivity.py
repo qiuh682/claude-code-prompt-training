@@ -3,6 +3,14 @@ Tests for GET /redis-check endpoint.
 Uses dependency_overrides to simulate failures (no container restarts needed).
 """
 
+import os
+
+# Set DATABASE_URL before importing app (required for asyncpg driver)
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/drugdiscovery",
+)
+
 from collections.abc import Generator
 from unittest.mock import MagicMock
 

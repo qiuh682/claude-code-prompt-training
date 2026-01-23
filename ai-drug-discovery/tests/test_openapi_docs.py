@@ -3,6 +3,14 @@ Tests for OpenAPI documentation endpoints.
 Verifies Swagger UI, ReDoc, and OpenAPI schema are properly configured.
 """
 
+import os
+
+# Set DATABASE_URL before importing app (required for asyncpg driver)
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/drugdiscovery",
+)
+
 import pytest
 from fastapi.testclient import TestClient
 
