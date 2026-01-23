@@ -18,6 +18,17 @@ from db.models.discovery import (
     ProjectTarget,
     Target,
 )
+from db.models.ml_registry import (
+    ArtifactType,
+    MLModel,
+    MLModelArtifact,
+    MLModelDeployment,
+    MLModelLineage,
+    MLModelMetrics,
+    MLModelVersion,
+    ModelVersionStatus,
+    can_transition_version,
+)
 from db.models.upload import (
     DuplicateAction,
     FileType,
@@ -47,6 +58,16 @@ __all__ = [
     "ProjectMolecule",
     "ProjectTarget",
     "Target",
+    # ML Registry models
+    "ArtifactType",
+    "MLModel",
+    "MLModelArtifact",
+    "MLModelDeployment",
+    "MLModelLineage",
+    "MLModelMetrics",
+    "MLModelVersion",
+    "ModelVersionStatus",
+    "can_transition_version",
     # Upload models
     "DuplicateAction",
     "FileType",

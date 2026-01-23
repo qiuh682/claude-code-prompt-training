@@ -36,6 +36,16 @@ from db.models.discovery import (  # noqa: F401
     Target,
 )
 
+# ML Model Registry models (Task 3.1)
+from db.models.ml_registry import (  # noqa: F401
+    MLModel,
+    MLModelArtifact,
+    MLModelDeployment,
+    MLModelLineage,
+    MLModelMetrics,
+    MLModelVersion,
+)
+
 # this is the Alembic Config object
 config = context.config
 

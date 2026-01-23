@@ -120,6 +120,14 @@ class Organization(Base):
         "Prediction", back_populates="organization", cascade="all, delete-orphan"
     )
 
+    # ML Model Registry relationships
+    ml_models = relationship(
+        "MLModel", back_populates="organization", cascade="all, delete-orphan"
+    )
+    ml_deployments = relationship(
+        "MLModelDeployment", back_populates="organization", cascade="all, delete-orphan"
+    )
+
     def __repr__(self) -> str:
         return f"<Organization {self.slug}>"
 
@@ -148,6 +156,7 @@ class Team(Base):
     memberships = relationship(
         "Membership", back_populates="team", cascade="all, delete-orphan"
     )
+    ml_models = relationship("MLModel", back_populates="owner_team")
 
     def __repr__(self) -> str:
         return f"<Team {self.name}>"
